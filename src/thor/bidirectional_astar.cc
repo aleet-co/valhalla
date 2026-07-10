@@ -1375,8 +1375,9 @@ std::vector<std::vector<PathInfo>> BidirectionalAStar::FormPath(GraphReader& gra
     //   to circumvent the closed edge(s)
     try {
       bool invariant = options.date_time_type() == Options::invariant;
+      const bool ignore_access_on_recost = options.costing_type() != Costing::truck_ban;
       sif::recost_forward(graphreader, *costing_, edge_cb, label_cb, source_pct, target_pct,
-                          time_info, invariant, true);
+                          time_info, invariant, ignore_access_on_recost);
     } catch (const std::exception& e) {
       LOG_ERROR(std::string("Bi-directional astar failed to recost final path: ") + e.what());
       continue;

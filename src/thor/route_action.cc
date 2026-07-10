@@ -6,6 +6,8 @@
 #include "thor/worker.h"
 #include "sif/truck_ban_cache.h"
 
+#include <memory>
+
 #include <cstdint>
 
 using namespace valhalla;
@@ -458,6 +460,10 @@ std::vector<std::vector<thor::PathInfo>> thor_worker_t::get_path(PathAlgorithm* 
   // Find the path.
   valhalla::sif::cost_ptr_t cost = mode_costing[static_cast<uint32_t>(mode)];
   std::unique_ptr<valhalla::sif::truck_ban::RouteCacheLogScope> route_cache_log;
+  if (options.costing_type() == Costing::truck_ban) {
+    route_cache_log = std::make_unique<valhalla::sif::truck_ban::RouteCacheLogScope>(
+        origin.ll().lat(), origin.ll().lng(), destination.ll().lat(), destination.ll().lng());
+  }
 
   // If bidirectional A* disable use of destination-only edges on the
   // first pass. If there is a failure, we allow them on the second pass.
