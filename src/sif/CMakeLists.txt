@@ -15,6 +15,7 @@ set(sources
   transitcost.cc
   truckcost.cc
   truck_ban_rules.cc
+  truck_ban_cache.cc
   truckbancost.cc
   dynamiccost.cc
   recost.cc)
