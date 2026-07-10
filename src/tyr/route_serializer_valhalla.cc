@@ -667,7 +667,9 @@ void legs(valhalla::Api& api, int route_index, rapidjson::writer_wrapper_t& writ
     ++trip_leg_itr;
     writer.end_object();
 
-    writer("shape", directions_leg.shape());
+    if (api.options().shape_format() != ShapeFormat::no_shape) {
+      writer("shape", directions_leg.shape());
+    }
 
     writer.end_object(); // leg
   }
