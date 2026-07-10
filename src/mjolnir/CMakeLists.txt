@@ -26,6 +26,7 @@ set(sources
   ${CMAKE_CURRENT_BINARY_DIR}/admin_lua_proc.h
   add_predicted_speeds.cc
   admin.cc
+  location_timezone_lookup.cc
   adminbuilder.cc
   bssbuilder.cc
   complexrestrictionbuilder.cc

@@ -6,6 +6,12 @@
 #include <valhalla/midgard/logging.h>
 #include <valhalla/proto/common.pb.h>
 
+namespace valhalla {
+namespace mjolnir {
+int TimezoneIndexForLatLng(double lat, double lng);
+} // namespace mjolnir
+} // namespace valhalla
+
 #include <chrono>
 
 namespace dt = valhalla::baldr::DateTime;
@@ -78,6 +84,10 @@ struct TimeInfo {
       timezone_index = reader.GetTimezone(edge->endnode(), tile);
       if (timezone_index != 0)
         break;
+    }
+
+    if (timezone_index == 0) {
+      timezone_index = mjolnir::TimezoneIndexForLatLng(location.ll().lat(), location.ll().lng());
     }
 
     // return the time info based on this location information
