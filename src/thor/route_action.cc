@@ -4,6 +4,7 @@
 #include "thor/route_matcher.h"
 #include "thor/triplegbuilder.h"
 #include "thor/worker.h"
+#include "sif/truck_ban_cache.h"
 
 #include <cstdint>
 
@@ -456,6 +457,7 @@ std::vector<std::vector<thor::PathInfo>> thor_worker_t::get_path(PathAlgorithm* 
   const Options& options = request.options();
   // Find the path.
   valhalla::sif::cost_ptr_t cost = mode_costing[static_cast<uint32_t>(mode)];
+  std::unique_ptr<valhalla::sif::truck_ban::RouteCacheLogScope> route_cache_log;
 
   // If bidirectional A* disable use of destination-only edges on the
   // first pass. If there is a failure, we allow them on the second pass.
