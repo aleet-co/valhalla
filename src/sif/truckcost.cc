@@ -6,6 +6,7 @@
 #include "baldr/rapidjson_utils.h"
 #include "proto_conversions.h"
 #include "sif/osrm_car_duration.h"
+#include "sif/truck_ban_rules.h"
 
 #ifdef INLINE_TEST
 #include "test.h"
@@ -332,6 +333,7 @@ public:
 
   // determine if we should allow hgv=no edges and penalize them instead
   float no_hgv_access_penalty_;
+  bool enforce_eu_truck_bans_;
 };
 
 // Constructor
@@ -387,6 +389,7 @@ TruckCost::TruckCost(const Costing& costing)
   no_hgv_access_penalty_ = no_hgv_access_penalty_active * costing_options.hgv_no_access_penalty();
   // set the access mask to both car & truck if that penalty is active
   access_mask_ = no_hgv_access_penalty_active ? (kAutoAccess | kTruckAccess) : kTruckAccess;
+  enforce_eu_truck_bans_ = costing.type() == Costing::truck_ban;
 }
 
 // Destructor
@@ -467,6 +470,20 @@ inline bool TruckCost::Allowed(const baldr::DirectedEdge* edge,
     return false;
   }
 
+
+  if (enforce_eu_truck_bans_ && current_time != 0) {
+    uint64_t arrival_time = current_time;
+    const uint32_t speed =
+        edge->truck_speed() ? edge->truck_speed() : (edge->speed() > 0 ? edge->speed() : top_speed_);
+    if (speed > 0) {
+      arrival_time += static_cast<uint64_t>(edge->length() * kSpeedFactor[speed]);
+    }
+    if (!truck_ban::IsTraverseAllowed(pred.endnode(), edge->endnode(), tile, graph_reader_,
+                                      current_time, arrival_time, weight_, edge->classification())) {
+      return false;
+    }
+  }
+
   return DynamicCost::EvaluateRestrictions(access_mask_, edge, is_dest, tile, edgeid, current_time,
                                            tz_index, restriction_idx, destonly_access_restr_mask);
 }
@@ -491,6 +508,22 @@ bool TruckCost::AllowedReverse(const baldr::DirectedEdge* edge,
       (exclude_unpaved_ && !pred.unpaved() && opp_edge->unpaved()) ||
       CheckExclusions<false>(opp_edge, pred)) {
     return false;
+  }
+
+
+  if (enforce_eu_truck_bans_ && current_time != 0) {
+    uint64_t arrival_time = current_time;
+    const uint32_t speed = opp_edge->truck_speed()
+                               ? opp_edge->truck_speed()
+                               : (opp_edge->speed() > 0 ? opp_edge->speed() : top_speed_);
+    if (speed > 0) {
+      arrival_time += static_cast<uint64_t>(opp_edge->length() * kSpeedFactor[speed]);
+    }
+    if (!truck_ban::IsTraverseAllowed(pred.endnode(), opp_edge->endnode(), tile, graph_reader_,
+                                      current_time, arrival_time, weight_,
+                                      opp_edge->classification())) {
+      return false;
+    }
   }
 
   return DynamicCost::EvaluateRestrictions(access_mask_, opp_edge, false, tile, opp_edgeid,

@@ -266,6 +266,10 @@ public:
   DynamicCost(const DynamicCost&) = delete;
   DynamicCost& operator=(const DynamicCost&) = delete;
 
+  virtual void SetGraphReader(baldr::GraphReader* reader) {
+    graph_reader_ = reader;
+  }
+
   /**
    * Does the costing method allow multiple passes (with relaxed
    * hierarchy limits).
@@ -1369,6 +1373,7 @@ protected:
 
   // Should we penalize uturns on short internal edges?
   bool penalize_uturns_;
+  baldr::GraphReader* graph_reader_{nullptr};
 
   bool exclude_unpaved_{false};
   bool exclude_bridges_{false};
