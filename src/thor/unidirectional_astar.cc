@@ -501,6 +501,7 @@ std::vector<std::vector<PathInfo>> UnidirectionalAStar<expansion_direction, FORW
                               origin.correlation().edges(0).ll().lat());
   midgard::PointLL destination_new(destination.correlation().edges(0).ll().lng(),
                                    destination.correlation().edges(0).ll().lat());
+  costing_->SetGraphReader(&graphreader);
   Init(origin_new, destination_new);
   float mindist = astarheuristic_.GetDistance(FORWARD ? origin_new : destination_new);
 

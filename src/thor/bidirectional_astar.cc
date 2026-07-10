@@ -578,6 +578,7 @@ BidirectionalAStar::GetBestPath(valhalla::Location& origin,
   // PathLocation using edges.front here means we are only setting the
   // heuristics to one of them alternate paths using the other correlated
   // points to may be harder to find
+  costing_->SetGraphReader(&graphreader);
   SetOrigin(graphreader, origin, forward_time_info);
   SetDestination(graphreader, destination, reverse_time_info);
 

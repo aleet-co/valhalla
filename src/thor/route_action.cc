@@ -464,6 +464,7 @@ std::vector<std::vector<thor::PathInfo>> thor_worker_t::get_path(PathAlgorithm* 
   cost->set_allow_destination_only(path_algorithm == &bidir_astar ? false : true);
 
   cost->set_pass(0);
+  cost->SetGraphReader(reader.get());
   auto paths = path_algorithm->GetBestPath(origin, destination, *reader, mode_costing, mode, options);
 
   // Check if we should run a second pass pedestrian route with different A*
