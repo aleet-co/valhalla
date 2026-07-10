@@ -1,6 +1,9 @@
 #include "thor/worker.h"
 #include "midgard/logging.h"
+#include "odin/directionsbuilder.h"
+#include "odin/markup_formatter.h"
 #include "thor/isochrone.h"
+#include "tyr/serializers.h"
 
 #include <boost/property_tree/ptree.hpp>
 
@@ -157,7 +160,13 @@ thor_worker_t::work(const std::list<zmq::message_t>& job,
         break;
       case Options::route: {
         route(request);
-        result.messages.emplace_back(serialize_to_pbf(request));
+        if (options.directions_type() == DirectionsType::none) {
+          valhalla::odin::MarkupFormatter markup_formatter;
+          valhalla::odin::DirectionsBuilder().Build(request, markup_formatter);
+          result = to_response(valhalla::tyr::serializeDirections(request), info, request);
+        } else {
+          result.messages.emplace_back(serialize_to_pbf(request));
+        }
         break;
       }
       case Options::trace_route: {
