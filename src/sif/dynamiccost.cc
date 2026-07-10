@@ -12,6 +12,7 @@
 #include "sif/pedestriancost.h"
 #include "sif/transitcost.h"
 #include "sif/truckcost.h"
+#include "sif/truckbancost.h"
 
 #include <boost/optional.hpp>
 
@@ -697,6 +698,10 @@ void ParseCosting(const rapidjson::Document& doc,
     }
     case Costing::truck: {
       sif::ParseTruckCostOptions(doc, key, costing, warnings);
+      break;
+    }
+    case Costing::truck_ban: {
+      sif::ParseTruckBanCostOptions(doc, key, costing, warnings);
       break;
     }
     case Costing::motorcycle: {

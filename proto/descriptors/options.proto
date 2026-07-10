@@ -132,6 +132,7 @@ message Costing {
     auto_ = 10;
     bikeshare = 11;    // turns into pedestrian + bike
     auto_pedestrian = 12; // turns into auto + pedestrian
+    truck_ban = 13; // truck with EU driving ban rules
   }
 
   message Options {

@@ -12,6 +12,7 @@
 #include <valhalla/sif/pedestriancost.h>
 #include <valhalla/sif/transitcost.h>
 #include <valhalla/sif/truckcost.h>
+#include <valhalla/sif/truckbancost.h>
 
 #include <functional>
 #include <map>
@@ -43,6 +44,7 @@ public:
     Register(Costing::motorcycle, CreateMotorcycleCost);
     Register(Costing::pedestrian, CreatePedestrianCost);
     Register(Costing::truck, CreateTruckCost);
+    Register(Costing::truck_ban, CreateTruckBanCost);
     Register(Costing::transit, CreateTransitCost);
     Register(Costing::multimodal, CreateNoCost); // dummy so it behaves like the rest
     Register(Costing::none_, CreateNoCost);

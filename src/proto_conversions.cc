@@ -211,6 +211,7 @@ bool Costing_Enum_Parse(const std::string& costing, Costing::Type* c) {
       {"pedestrian", Costing::pedestrian},
       {"transit", Costing::transit},
       {"truck", Costing::truck},
+      {"truck_ban", Costing::truck_ban},
       {"motorcycle", Costing::motorcycle},
       // auto_data_fix is deprecated
       {"none", Costing::none_},
@@ -244,6 +245,7 @@ const std::string& Costing_Enum_Name(const Costing::Type costing) {
       {Costing::pedestrian, "pedestrian"},
       {Costing::transit, "transit"},
       {Costing::truck, "truck"},
+      {Costing::truck_ban, "truck_ban"},
       {Costing::motorcycle, "motorcycle"},
       // auto_data_fix is deprecated
       {Costing::none_, "none"},
