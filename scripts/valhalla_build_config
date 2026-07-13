@@ -172,6 +172,10 @@ config = {
             "use_rest_area": False,
             "scan_tar": False,
         },
+        "tdalt": {
+            "landmark_count": 16,
+            "landmarks_file": "/custom_files/tdalt_landmarks.bin",
+        },
     },
     "additional_data": {
         "elevation": "/data/valhalla/elevation/",
@@ -253,6 +257,13 @@ config = {
                 },
                 "expand_within_distance": {"0": 1e8, "1": 100000, "2": 5000},
             }
+        },
+        "tdalt": {
+            "enabled": False,
+            "fallback_to_unidirectional": True,
+            "approximation_factor": 1.0,
+            "checkpoint_count": 10,
+            "max_reserved_labels_count": 1000000,
         },
     },
     "odin": {
@@ -516,6 +527,10 @@ help_text = {
             "use_rest_area": "bool indicating whether or not to use the rest/service area tag on the ways",
             "scan_tar": "bool indicating whether or not to pre-scan the tar ball(s) when loading an extract with an index file, to warm up the OS page cache.",
         },
+        "tdalt": {
+            "landmark_count": "Number of ALT landmarks for time-dependent routing (not POI landmarks)",
+            "landmarks_file": "Path to precomputed TDALT landmark distance file",
+        },
     },
     "additional_data": {
         "elevation": "Location of elevation tiles",
@@ -596,6 +611,13 @@ help_text = {
                     "2": "The default distance within which expansion is allowed from the origin/destination on level 2 in bidirectional astar",
                 },
             }
+        },
+        "tdalt": {
+            "enabled": "Whether to use TDALT for time-dependent route requests",
+            "fallback_to_unidirectional": "Fall back to TimeDepForward/Reverse when TDALT is unavailable",
+            "approximation_factor": "Approximation factor K (1.0 = exact)",
+            "checkpoint_count": "Number of checkpoints for tightened backward potential",
+            "max_reserved_labels_count": "Maximum reserved labels for TDALT search",
         },
     },
     "odin": {

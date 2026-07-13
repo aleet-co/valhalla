@@ -870,6 +870,9 @@ void from_json(rapidjson::Document& doc, Options::Action action, Api& api) {
         throw valhalla_exception_t{142};
     }
   }
+  if (options.action() == Options::route && options.date_time_type() == Options::invariant) {
+    throw valhalla_exception_t{169};
+  }
 
   // Set the output precision for shape/geometry (polyline encoding). Defaults to polyline6
   // This also controls the input precision for encoded_polyline in height action
