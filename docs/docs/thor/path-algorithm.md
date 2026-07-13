@@ -16,7 +16,7 @@ The basic algorithm provided within Thor is an A\* algorithm. This algorithm sea
 
 #### Bidirectional A\*
 
-The primary algorithm used for most types of routes is a bidirectional A\* method. This algorithm searches for the lowest cost path in two directions: one from the origin towards the destination and the other "backwards" from the destination towards the origin. This algorithm has better performance then the A\* algorithm since it more effectively cuts the search space. However, there are some complexities added to handle the backwards progression from the destination to the origin. Turn restrictions and transition costing is more complicated. Also, the determination of the connection point between the two searches (determination of route completion) is more complex. Another strength of the bidirectional A* method is that hierarchy transitions near the destination are simplified. Currently bidirectional A* performs only invariant behaviour of traffic update, there is no algorithm implemented for correct evaluation of edge passing time.
+The primary algorithm used for most types of routes is a bidirectional A\* method. This algorithm searches for the lowest cost path in two directions: one from the origin towards the destination and the other "backwards" from the destination towards the origin. This algorithm has better performance then the A\* algorithm since it more effectively cuts the search space. However, there are some complexities added to handle the backwards progression from the destination to the origin. Turn restrictions and transition costing is more complicated. Also, the determination of the connection point between the two searches (determination of route completion) is more complex. Another strength of the bidirectional A* method is that hierarchy transitions near the destination are simplified. For requests **without** a `date_time`, bidirectional A\* is the default algorithm. It does not advance a departure clock during search; time-dependent edge costs are not evaluated per edge in the search trees. When a `/route` request includes a supported `date_time` (`current`, `depart_at`, or `arrive_by`), Thor selects TDALT, TimeDepForward, or TimeDepReverse instead (see [Time-dependent routing](#time-dependent-routing) above).
 
 Pedestrian and bicycle routes use just the local graph hierarchy. They never transition to the arterial or highway levels and thus never use shortcut edges.
 
@@ -25,6 +25,73 @@ The bidirectional A\* algorithm makes use of edge markings that enter regions wh
 #### Multi-modal
 
 Multi-modal routes use an A\* method that is enahanced to allow time-dependency and mode changes. Public transit information includes schedule information that find the next departure along directed edges between transit stops. Unique pairs of transit stops and routes create separate graph edges with a unique *line-id* to which departure schedules can be associated.
+
+#### Time-dependent routing
+
+When a `/route` request includes a `date_time`, Thor selects a time-dependent path algorithm. Static requests (no `date_time` on any leg) continue to use **bidirectional A\*** with hierarchy pruning and shortcuts unchanged.
+
+**Algorithm selection**
+
+| Request | Algorithm | Notes |
+| :------ | :-------- | :---- |
+| No `date_time` | `bidir_astar` | Default static routing |
+| `date_time.type` = `current` (0) or `depart_at` (1) | **TDALT** | When `thor.tdalt.enabled` is true and landmark data is available |
+| Same, but TDALT unavailable | `TimeDepForward` | When `thor.tdalt.fallback_to_unidirectional` is true |
+| Same, but fallback disabled | `bidir_astar` | Warning 499; ETA recosted for time-dependent accuracy |
+| `date_time.type` = `arrive_by` (2) | `TimeDepReverse` | **Not TDALT** — project choice for arrival-time queries |
+| `date_time.type` = `invariant` (3) | — | **Rejected** at request parse (HTTP 400, error 169) |
+
+Multimodal, transit, and bikeshare costing modes use their own specialized algorithms regardless of `date_time`.
+
+#### TDALT (Time-Dependent ALT)
+
+**TDALT** (*Time-Dependent bidirectional A\* with ALT landmarks*) is the primary time-dependent algorithm for **`current`** and **`depart_at`** `/route` requests when enabled. It implements the bidirectional time-dependent search from Nannicini et al. using precomputed ALT landmark potentials on a lower-bound graph `G_λ`.
+
+| Search tree | Graph | Costs | Time tracking |
+| :---------- | :---- | :---- | :-------------- |
+| Forward | `G` (routing graph) | Time-dependent edge costs `c(u,v,τ)` | Live `TimeInfo` at each expansion |
+| Backward | `G_λ` (lower-bound graph) | Static lower bounds `λ(u,v)` | None |
+
+The search runs in three phases: bidirectional meet, backward bounding, then forward-only completion restricted to nodes discovered by the backward search. This yields correct time-dependent paths (traffic, time restrictions, and costing rules such as `truck_ban` are evaluated on the forward tree during search, not only after the path is found).
+
+**Requirements**
+
+- Landmark sidecar built at tile-build time: `valhalla_build_tdalt_landmarks` writes `tdalt_landmarks.bin` (default 16 landmarks on `G_λ`).
+- Runtime flag `thor.tdalt.enabled: true` (defaults to **false**).
+- Landmark file path configured under `mjolnir.tdalt.landmarks_file`.
+
+If landmarks are missing or TDALT is disabled, `current` / `depart_at` requests fall back per the table above.
+
+**Configuration**
+
+| Key | Default | Purpose |
+| :-- | :------ | :------ |
+| `mjolnir.tdalt.landmark_count` | 16 | Landmarks selected during preprocessing |
+| `mjolnir.tdalt.landmarks_file` | — | Path to `tdalt_landmarks.bin` sidecar |
+| `thor.tdalt.enabled` | `false` | Enable TDALT for `current` / `depart_at` |
+| `thor.tdalt.fallback_to_unidirectional` | `false` | Fall back to `TimeDepForward` when TDALT unavailable |
+| `thor.tdalt.approximation_factor` | 1.0 | Phase-2 approximation bound (`1.0` = exact) |
+| `thor.tdalt.checkpoint_count` | 10 | Checkpoints for tightened backward potential |
+| `thor.tdalt.max_reserved_labels_count` | (internal default) | Pre-allocated edge label pool size |
+
+See also [TDALT FIFO audit](tdalt-fifo-audit.md) for correctness assumptions.
+
+#### TimeDepForward and TimeDepReverse
+
+These unidirectional A\* algorithms remain in Thor for fallback and for request types TDALT does not handle:
+
+- **TimeDepForward** — forward search with live time-dependent costing. Used as fallback for `current` / `depart_at` when TDALT is unavailable and `thor.tdalt.fallback_to_unidirectional` is true, and for trivial same-edge cases when TDALT is disabled.
+- **TimeDepReverse** — reverse search from the destination. Used for all **`arrive_by`** `/route` requests within `max_timedep_distance` (not TDALT in this deployment).
+
+Both skip hierarchy shortcuts and are slower on long routes than bidirectional static search, which is why TDALT is preferred for departure-time queries when landmarks are available.
+
+#### Deprecated / unsupported for time-dependent `/route`
+
+| Feature | Status |
+| :------ | :----- |
+| `prioritize_bidirectional` | **Deprecated** for time-dependent routing — does not apply when TDALT or unidirectional TD is selected |
+| `date_time.type` = `invariant` (3) | **Unsupported** — rejected with HTTP 400, error 169 |
+| `reverse_time_tracking` | Obsolete for TD routing; only affects non-TD bidirectional A\* |
 
 #### A* Heuristic
 

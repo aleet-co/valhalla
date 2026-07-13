@@ -24,6 +24,22 @@ namespace {
 // A* can take excessive time for longer paths - so exclude them to protect the service.
 constexpr float kPedestrianMultipassThreshold = 50000.0f; // 50km
 
+bool has_supported_date_time(const Options& options,
+                             const Location& origin,
+                             const Location& destination) {
+  if (options.date_time_type() == Options::no_time) {
+    return false;
+  }
+  if (options.date_time_type() == Options::invariant) {
+    return false; // rejected in worker
+  }
+  if (options.date_time_type() == Options::arrive_by) {
+    return false; // arrive_by uses TimeDepReverse, not TDALT
+  }
+  return !origin.date_time().empty() || !destination.date_time().empty() ||
+         options.date_time_type() != Options::no_time;
+}
+
 /**
  * Check if the paths meet at opposing edges (but not at a node). If so, add an intermediate location
  * so that the shape / distance along the path is adjusted at the location.
@@ -386,6 +402,7 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
            &multi_modal_transit,
            &timedep_forward,
            &timedep_reverse,
+           &tdalt_,
            &bidir_astar,
            &multimodal_astar,
        }) {
@@ -407,29 +424,30 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
   }
 
   const auto& options = request.options();
-  // If the origin has date_time set use timedep_forward method if the distance
-  // between location is below some maximum distance (TBD).
-  if (!origin.date_time().empty() && options.date_time_type() != Options::invariant &&
-      !options.prioritize_bidirectional()) {
-    PointLL ll1(origin.ll().lng(), origin.ll().lat());
-    PointLL ll2(destination.ll().lng(), destination.ll().lat());
-    if (ll1.Distance(ll2) < max_timedep_distance) {
-      return &timedep_forward;
-    } else {
+  PointLL ll1(origin.ll().lng(), origin.ll().lat());
+  PointLL ll2(destination.ll().lng(), destination.ll().lat());
+  const float route_distance = ll1.Distance(ll2);
+
+  // arrive_by: always TimeDepReverse (not TDALT)
+  if ((options.date_time_type() == Options::arrive_by || !destination.date_time().empty()) &&
+      options.date_time_type() != Options::invariant) {
+    if (route_distance < max_timedep_distance) {
+      return &timedep_reverse;
+    }
+    add_warning(request, 214);
+  } else if (has_supported_date_time(options, origin, destination)) {
+    // current / depart_at: try TDALT
+    if (tdalt_enabled_ && landmarks_available_) {
+      if (route_distance < max_timedep_distance) {
+        return &tdalt_;
+      }
       add_warning(request, 402);
     }
-  }
-
-  // If the destination has date_time set use timedep_reverse method if the distance
-  // between location is below some maximum distance (TBD).
-  if (!destination.date_time().empty() && options.date_time_type() != Options::invariant) {
-    PointLL ll1(origin.ll().lng(), origin.ll().lat());
-    PointLL ll2(destination.ll().lng(), destination.ll().lat());
-    if (ll1.Distance(ll2) < max_timedep_distance) {
-      return &timedep_reverse;
-    } else {
-      add_warning(request, 214);
+    if (tdalt_fallback_to_unidirectional_) {
+      return &timedep_forward;
     }
+    add_warning(request, 499);
+    // fall through to bidir_astar
   }
 
   // Use A* if any origin and destination edges are the same or are connected - otherwise
@@ -442,6 +460,10 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
       bool are_connected =
           reader->AreEdgesConnected(GraphId(edge1.graph_id()), GraphId(edge2.graph_id()));
       if (same_graph_id || are_connected) {
+        if (has_supported_date_time(options, origin, destination) && tdalt_enabled_ &&
+            landmarks_available_) {
+          return &tdalt_;
+        }
         return &timedep_forward;
       }
     }

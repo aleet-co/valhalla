@@ -42,4 +42,8 @@ if(ENABLE_DATA_TOOLS)
   if(TARGET gurka_tdalt)
     add_dependencies(gurka_tdalt utrecht_tiles)
   endif()
+
+  if(TARGET gurka_tdalt_truck_ban)
+    add_dependencies(gurka_tdalt_truck_ban utrecht_tiles build_timezones)
+  endif()
 endif()
