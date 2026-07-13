@@ -17,6 +17,7 @@ set(sources
   truck_ban_rules.cc
   truck_ban_cache.cc
   truckbancost.cc
+  lower_bound_cost.cc
   dynamiccost.cc
   recost.cc)
 
