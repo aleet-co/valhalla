@@ -78,6 +78,7 @@ set(sources
     streetnames_factory.cc
     streetname_us.cc
     streetnames_us.cc
+    tdalt_landmarks.cc
     transitdeparture.cc
     transitroute.cc
     transitschedule.cc

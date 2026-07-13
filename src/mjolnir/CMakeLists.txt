@@ -59,6 +59,7 @@ set(sources
   shortcutbuilder.cc
   speed_assigner.h
   sqlite3.cc
+  tdalt_landmarks_builder.cc
   timeparsing.cc
   transitbuilder.cc
   util.cc
@@ -78,6 +79,7 @@ endif()
 set(mjolnir_depends
   valhalla::proto
   valhalla::baldr
+  valhalla::sif
   PkgConfig::GEOS
   PkgConfig::SpatiaLite
   SQLite3::SQLite3
