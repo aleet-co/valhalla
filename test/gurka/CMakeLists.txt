@@ -38,4 +38,8 @@ if(ENABLE_DATA_TOOLS)
 
   add_dependencies(tests gurka)
   add_dependencies(check run-gurka)
+
+  if(TARGET gurka_tdalt)
+    add_dependencies(gurka_tdalt utrecht_tiles)
+  endif()
 endif()

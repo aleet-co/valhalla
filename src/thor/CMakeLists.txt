@@ -23,6 +23,7 @@ set(sources
   optimizer.cc
   route_matcher.cc
   status_action.cc
+  tdalt.cc
   trace_attributes_action.cc
   trace_route_action.cc
   triplegbuilder_utils.h)

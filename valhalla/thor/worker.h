@@ -17,6 +17,7 @@
 #include <valhalla/thor/multimodal_transit.h>
 #include <valhalla/thor/timedistancebssmatrix.h>
 #include <valhalla/thor/timedistancematrix.h>
+#include <valhalla/thor/tdalt.h>
 #include <valhalla/thor/unidirectional_astar.h>
 #include <valhalla/worker.h>
 
@@ -116,6 +117,10 @@ protected:
   MultiModalPathAlgorithm multi_modal_transit;
   TimeDepForward timedep_forward;
   TimeDepReverse timedep_reverse;
+  TimeDependentBidirALT tdalt_;
+  bool tdalt_enabled_;
+  bool tdalt_fallback_to_unidirectional_;
+  bool landmarks_available_;
 
   // Time distance matrix
   CostMatrix costmatrix_;

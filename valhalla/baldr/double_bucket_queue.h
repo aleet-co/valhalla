@@ -146,12 +146,43 @@ public:
   }
 
   /**
+   * Returns the minimum sortcost among queued labels, or max float if empty.
+   */
+  float min_sortcost() const {
+    float min_cost = std::numeric_limits<float>::max();
+    for (const uint32_t label : overflowbucket_) {
+      min_cost = std::min(min_cost, (*labelcontainer_)[label].sortcost());
+    }
+    for (const auto& bucket : buckets_) {
+      for (const uint32_t label : bucket) {
+        min_cost = std::min(min_cost, (*labelcontainer_)[label].sortcost());
+      }
+    }
+    return min_cost;
+  }
+
+  /**
+   * Returns true if no labels are queued.
+   */
+  bool empty() const {
+    if (!overflowbucket_.empty()) {
+      return false;
+    }
+    for (const auto& bucket : buckets_) {
+      if (!bucket.empty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Removes the lowest cost label index from the sorted buckets.
    * @return  Returns the label index of the lowest cost label. Returns
    *          kInvalidLabel if the buckets are empty.
    */
   uint32_t pop() {
-    if (empty()) {
+    if (empty_buckets()) {
       // No labels found in the low-level buckets.
       if (overflowbucket_.empty()) {
         // Return an invalid label if no labels are in the overflow buckets.
@@ -163,7 +194,7 @@ public:
         // Move labels from the overflow bucket to the low level buckets.
         // Return invalid label if still empty.
         empty_overflow();
-        if (empty()) {
+        if (empty_buckets()) {
           return baldr::kInvalidLabel;
         }
       }
@@ -207,11 +238,11 @@ private:
   }
 
   /**
-   * Increments currentbucket_in the low-level buckets until a non-empty
+   * Increments currentbucket in the low-level buckets until a non-empty
    * bucket is found.
    * @return  Returns true if the low-level buckets are all empty.
    */
-  bool empty() {
+  bool empty_buckets() {
     while (currentbucket_ != buckets_.end() && currentbucket_->empty()) {
       ++currentbucket_;
       currentcost_ += bucketsize_;
