@@ -7,8 +7,13 @@ namespace valhalla {
 namespace mjolnir {
 
 /**
- * Build the TDALT landmark distance sidecar from graph tiles.
- * Task 5 writes a valid header stub; Task 6 adds maxCover selection and Dijkstra tables.
+ * Offline preprocessing for TDALT ALT landmarks (graph G_λ).
+ *
+ * Pipeline:
+ *   1. Subsample level-2 (local) nodes as landmark candidates
+ *   2. maxCover — greedily pick L landmarks that maximize min λ-distance to prior picks
+ *   3. Run λ-Dijkstra from each landmark (forward + reverse on G_λ)
+ *   4. Write tdalt_landmarks.bin for mmap load at service startup
  */
 void build_tdalt_landmarks(const boost::property_tree::ptree& config);
 

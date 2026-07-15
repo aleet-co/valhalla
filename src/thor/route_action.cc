@@ -27,6 +27,8 @@ constexpr float kPedestrianMultipassThreshold = 50000.0f; // 50km
 bool has_supported_date_time(const Options& options,
                              const Location& origin,
                              const Location& destination) {
+  // TDALT needs a known τ₀ (depart_at/current) so c(u,v,τ) is defined along the forward tree.
+  // arrive_by fixes τ at t (unknown during backward search) → TimeDepReverse instead.
   if (options.date_time_type() == Options::no_time) {
     return false;
   }
@@ -423,12 +425,13 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
     return &multimodal_astar;
   }
 
+  // --- Time-dependent algorithm selection (TDALT vs legacy timedep vs bidir_astar) ---
   const auto& options = request.options();
   PointLL ll1(origin.ll().lng(), origin.ll().lat());
   PointLL ll2(destination.ll().lng(), destination.ll().lat());
   const float route_distance = ll1.Distance(ll2);
 
-  // arrive_by: always TimeDepReverse (not TDALT)
+  // arrive_by: backward-on-G is ill-defined near t — keep TimeDepReverse (not TDALT).
   if ((options.date_time_type() == Options::arrive_by || !destination.date_time().empty()) &&
       options.date_time_type() != Options::invariant) {
     if (route_distance < max_timedep_distance) {
@@ -436,7 +439,7 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
     }
     add_warning(request, 214);
   } else if (has_supported_date_time(options, origin, destination)) {
-    // current / depart_at: try TDALT
+    // depart_at / current: prefer TDALT when enabled and landmark sidecar is loaded.
     if (tdalt_enabled_ && landmarks_available_) {
       if (route_distance < max_timedep_distance) {
         return &tdalt_;
@@ -444,6 +447,7 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
       add_warning(request, 402);
     }
     if (tdalt_fallback_to_unidirectional_) {
+      // Landmarks missing or TDALT disabled — legacy single-direction TimeDepForward.
       return &timedep_forward;
     }
     add_warning(request, 499);
@@ -460,6 +464,7 @@ thor::PathAlgorithm* thor_worker_t::get_path_algorithm(const std::string& routet
       bool are_connected =
           reader->AreEdgesConnected(GraphId(edge1.graph_id()), GraphId(edge2.graph_id()));
       if (same_graph_id || are_connected) {
+        // Trivial same-edge routes still need time-dependent costing; TDALT handles these too.
         if (has_supported_date_time(options, origin, destination) && tdalt_enabled_ &&
             landmarks_available_) {
           return &tdalt_;

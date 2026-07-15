@@ -117,10 +117,11 @@ protected:
   MultiModalPathAlgorithm multi_modal_transit;
   TimeDepForward timedep_forward;
   TimeDepReverse timedep_reverse;
+  // TDALT: bidirectional time-dependent search (G forward + G_λ backward with ALT landmarks).
   TimeDependentBidirALT tdalt_;
-  bool tdalt_enabled_;
-  bool tdalt_fallback_to_unidirectional_;
-  bool landmarks_available_;
+  bool tdalt_enabled_;                      // thor.tdalt.enabled
+  bool tdalt_fallback_to_unidirectional_; // fall back to TimeDepForward when landmarks missing
+  bool landmarks_available_;              // mjolnir.tdalt.landmarks_file loaded at startup
 
   // Time distance matrix
   CostMatrix costmatrix_;

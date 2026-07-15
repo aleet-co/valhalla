@@ -24,9 +24,46 @@ namespace valhalla {
 namespace thor {
 
 /**
- * Time-dependent bidirectional ALT path algorithm (TDALT).
- * Forward search on G with time-dependent costs; backward search on G_lambda
- * with lower-bound costs and ALT landmark potentials.
+ * Time-Dependent Bidirectional ALT (TDALT) — Algorithm 1 from Nannicini et al.
+ *
+ * Notation (paper symbols → this implementation):
+ *
+ *   G = (V, A)     Directed road graph from Valhalla tiles (nodes V, edges A).
+ *   s, t           Origin and destination graph nodes (origin_node_id_, destination_node_id_).
+ *   τ, τ₀          Departure/arrival time at a node (seconds since epoch). Forward search
+ *                  tracks τ along edges via TimeInfo; backward search does not use τ.
+ *   c(u,v,τ)       Time-dependent cost to traverse directed edge (u→v) when leaving u at τ.
+ *                  In code: costing_->EdgeCost() + TransitionCost() on the forward tree only.
+ *                  Includes traffic, truck_ban, turn penalties, and access at that instant.
+ *   λ(u,v)         Static lower-bound cost on the auxiliary graph G_λ (same topology as G).
+ *                  In code: LowerBoundCost::seconds() — length / max(edge_speed), ignoring
+ *                  traffic and bans. Must satisfy λ(u,v) ≤ c(u,v,τ) for all τ so backward
+ *                  A* keys never underestimate the true forward cost.
+ *   g(v), f(v)     Path cost from s to v (forward) and from v to t along the current tree.
+ *                  Stored in BDEdgeLabel::cost().cost; A* sort key is g + π.
+ *   π_f(v)         Forward potential: admissible lower bound on remaining c-cost from v to t.
+ *                  landmarks_->potential_to_target(v, t) on G_λ (ALT landmarks).
+ *   π_b(v)         Backward potential: admissible lower bound on remaining λ-cost from s to v.
+ *                  landmarks_->potential_from_source(v, s).
+ *   π*_b(v)        Tightened backward potential (Eq. 4): max(π_b(v), f(v*) + π_f(v*) − π_f(v))
+ *                  using the latest forward checkpoint node v* — tightens β without breaking
+ *                  admissibility.
+ *   μ              Upper bound on optimal route cost γ_τ₀(p*) after the first meet node v:
+ *                  μ = g_fwd(v) + g_bwd(v). Phase 2 stops expanding backward once β > K·μ.
+ *   β              Minimum sort key in the backward priority queue (g_λ + π*_b).
+ *   K              Approximation factor (approximation_factor_, default 1.0 = exact).
+ *   M              Set of nodes settled by the backward G_λ search; Phase 3 forward search
+ *                  may only expand through nodes in M (backward_settled_nodes_).
+ *
+ * Two trees:
+ *   Forward on G:   c(u,v,τ), live TimeInfo, key = g + π_f
+ *   Backward on G_λ: λ(u,v), no time, key = g_λ + π*_b
+ *
+ * Three phases:
+ *   kMeet         — bidirectional expansion until some v ∈ V is settled by both trees;
+ *                   set μ = g_fwd(v) + g_bwd(v)
+ *   kBound        — continue while β ≤ K·μ; add each backward-settled node to M
+ *   kForwardOnly  — forward on G within M until t is settled; FormPath recosts with c(·,τ)
  */
 class TimeDependentBidirALT : public PathAlgorithm {
 public:
@@ -70,6 +107,7 @@ protected:
 
   bool ExpandOneForward(baldr::GraphReader& graphreader);
 
+  // Expand one forward edge on G with time-dependent costing_->EdgeCost(τ).
   void ExpandForward(baldr::GraphReader& graphreader,
                      const baldr::GraphId& node,
                      sif::BDEdgeLabel& pred,
@@ -88,6 +126,7 @@ protected:
 
   float ForwardPotential(baldr::GraphReader& graphreader, const baldr::GraphId& node) const;
 
+  // Pop minimum backward label and expand on G_λ (λ costs, π*_b keys).
   bool ExpandOneBackward(baldr::GraphReader& graphreader);
 
   void ExpandBackward(baldr::GraphReader& graphreader,
@@ -108,14 +147,18 @@ protected:
 
   float BaseBackwardPotential(const baldr::GraphId& node) const;
 
+  // π*_b(v) = max(π_b(v), f(v*) + π_f(v*) − π_f(v)) — tightened backward heuristic (Eq. 4).
   float TightenedBackwardPotential(baldr::GraphReader& graphreader, const baldr::GraphId& node) const;
 
+  // Re-sort open backward labels after a forward checkpoint advances v*.
   void RebuildBackwardQueueKeys(baldr::GraphReader& graphreader);
 
+  // Advance forward checkpoint when g(v) crosses the next threshold; may rebuild β queue.
   void MaybeAdvanceCheckpoint(baldr::GraphReader& graphreader,
                               const baldr::GraphId& node,
                               uint32_t pred_idx);
 
+  // Record node in settled sets; detect Phase 1 meet and set μ.
   void OnNodeSettled(const baldr::GraphId& node, bool forward, uint32_t pred_idx);
 
   std::vector<std::vector<PathInfo>>
@@ -138,24 +181,44 @@ protected:
   }
 
 private:
+  // Algorithm 1 phase; drives the main loop in GetBestPath().
   enum class Phase { kMeet, kBound, kForwardOnly };
+
   Phase phase_{Phase::kMeet};
+
+  // μ — paper upper bound γ_τ₀(p) after first meet: g_fwd(v) + g_bwd(v) at shared node v.
   float mu_{std::numeric_limits<float>::max()};
+
+  // K — approximation factor; Phase 2 ends when β > K·μ (1.0 means exact optimality).
   float approximation_factor_{1.f};
+
+  // Checkpoints for tightened backward potential π*_b (§7.5); triggers queue rebuilds.
   uint32_t checkpoint_count_{10};
+
+  // v* and f(v*) from Eq. 4: last forward checkpoint node and its g(v*) + π_f(v*) sort key.
   baldr::GraphId last_forward_settled_;
   float last_forward_key_{0.f};
+
+  // π_f(s) — scales checkpoint thresholds across the forward cost range [0, π_f(origin)].
   float forward_potential_delta_{0.f};
   uint32_t next_checkpoint_{1};
+
+  // M — nodes settled by the backward G_λ tree (Phase 3 forward-only domain).
   std::unordered_set<uint64_t> backward_settled_nodes_;
+
+  // Forward-settled nodes; backward expansion stops when it hits these (§7.1).
   std::unordered_set<uint64_t> forward_settled_nodes_;
   std::unordered_map<uint64_t, uint32_t> forward_settled_labels_;
   std::unordered_map<uint64_t, uint32_t> backward_settled_labels_;
+
+  // mmap-loaded ALT tables on G_λ (mjolnir.tdalt.landmarks_file); not POI landmarks.sqlite.
   std::unique_ptr<baldr::TDALTLandmarkIndex> landmarks_;
+
+  // Graph-node seeds for ALT potentials π_f and π_b (correlated origin/dest edges).
   baldr::GraphId origin_node_id_;
   baldr::GraphId destination_node_id_;
 
-  // Mirror BidirectionalAStar search state (stubs for Tasks 10-11).
+  // Bidirectional search state (parallel forward/backward label queues and edge status).
   uint32_t access_mode_;
   sif::TravelMode mode_;
   uint8_t travel_type_;

@@ -79,7 +79,7 @@ const std::unordered_map<unsigned, valhalla::valhalla_exception_t> error_codes{
     {166, {166, "Exceeded max distance", 400, HTTP_400, OSRM_INVALID_VALUE, "too_large_distance"}},
     {167, {167, "Exceeded maximum circumference for exclude_polygons", 400, HTTP_400, OSRM_PERIMETER_EXCEEDED, "too_large_polygon"}},
     {168, {168, "Invalid expansion property type", 400, HTTP_400, OSRM_INVALID_OPTIONS, "invalid_expansion_property"}},
-    {169, {169, "Invariant date_time is not supported for route requests", 400, HTTP_400, OSRM_INVALID_OPTIONS, "invariant_route_not_supported"}},
+    {169, {169, "Invariant date_time is not supported for route requests", 400, HTTP_400, OSRM_INVALID_OPTIONS, "invariant_route_not_supported"}}, // TDALT: invariant needs fixed-cost bidir
     {170, {170, "Locations are in unconnected regions. Go check/edit the map at osm.org", 400, HTTP_400, OSRM_NO_ROUTE, "impossible_route"}},
     {171, {171, "No suitable edges near location", 400, HTTP_400, OSRM_NO_SEGMENT, "no_edges_near"}},
     {172, {172, "Exceeded breakage distance for all pairs", 400, HTTP_400, OSRM_BREAKAGE_EXCEEDED, "too_large_breakage_distance"}},

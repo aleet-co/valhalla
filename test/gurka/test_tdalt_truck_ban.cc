@@ -14,6 +14,8 @@
 #include <memory>
 #include <vector>
 
+// Integration: TDALT with truck_ban costing should match TimeDepForward on same depart_at request.
+
 #if !defined(VALHALLA_BUILD_DIR)
 #define VALHALLA_BUILD_DIR
 #endif

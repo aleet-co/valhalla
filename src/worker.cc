@@ -871,6 +871,7 @@ void from_json(rapidjson::Document& doc, Options::Action action, Api& api) {
     }
   }
   if (options.action() == Options::route && options.date_time_type() == Options::invariant) {
+    // invariant mode is incompatible with TDALT (requires fixed-cost bidir); reject on /route.
     throw valhalla_exception_t{169};
   }
 

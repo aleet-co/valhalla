@@ -181,6 +181,7 @@ const char* TDALTLandmarkIndex::find_record(const GraphId& node) const {
 }
 
 float TDALTLandmarkIndex::distance_to(const GraphId& node, uint32_t landmark) const {
+  // D_λ(node, L_i): λ-shortest-path distance from node toward landmark L_i.
   if (!available() || landmark >= landmark_count_) {
     return std::numeric_limits<float>::infinity();
   }
@@ -193,6 +194,7 @@ float TDALTLandmarkIndex::distance_to(const GraphId& node, uint32_t landmark) co
 }
 
 float TDALTLandmarkIndex::distance_from(const GraphId& node, uint32_t landmark) const {
+  // D_λ(L_i, node): λ-shortest-path distance from landmark L_i to node.
   if (!available() || landmark >= landmark_count_) {
     return std::numeric_limits<float>::infinity();
   }
@@ -206,6 +208,7 @@ float TDALTLandmarkIndex::distance_from(const GraphId& node, uint32_t landmark) 
 }
 
 float TDALTLandmarkIndex::potential_to_target(const GraphId& u, const GraphId& t) const {
+  // π_f(u): admissible estimate of remaining λ-cost from u to target t (forward A* key).
   float best = 0.f;
   for (uint32_t i = 0; i < landmark_count_; ++i) {
     best = std::max(best, distance_to(u, i) - distance_to(t, i));
@@ -215,6 +218,7 @@ float TDALTLandmarkIndex::potential_to_target(const GraphId& u, const GraphId& t
 }
 
 float TDALTLandmarkIndex::potential_from_source(const GraphId& u, const GraphId& s) const {
+  // π_b(u): admissible estimate of remaining λ-cost from source s to u (backward A* key).
   float best = 0.f;
   for (uint32_t i = 0; i < landmark_count_; ++i) {
     best = std::max(best, distance_to(s, i) - distance_to(u, i));

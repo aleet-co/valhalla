@@ -147,6 +147,7 @@ public:
 
   /**
    * Returns the minimum sortcost among queued labels, or max float if empty.
+   * TDALT Phase 2: this is β = min(g_λ + π*_b) over open backward labels.
    */
   float min_sortcost() const {
     float min_cost = std::numeric_limits<float>::max();
@@ -163,6 +164,7 @@ public:
 
   /**
    * Returns true if no labels are queued.
+   * TDALT uses this to detect exhausted forward/backward queues between phases.
    */
   bool empty() const {
     if (!overflowbucket_.empty()) {

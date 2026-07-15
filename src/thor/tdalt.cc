@@ -85,6 +85,8 @@ TimeDependentBidirALT::TimeDependentBidirALT(const boost::property_tree::ptree& 
       desired_paths_count_(1), threshold_delta_(0.f), alternative_cost_extend_(0.f),
       alternative_iterations_delta_(0), extended_search_(false), pruning_disabled_at_origin_(false),
       pruning_disabled_at_destination_(false) {
+  // Landmark file is built offline on G_λ (valhalla_build_tdalt_landmarks). Without it,
+  // route_action falls back to TimeDepForward when thor.tdalt.fallback_to_unidirectional is set.
   const auto landmarks_file = config.get<std::string>("mjolnir.tdalt.landmarks_file", "");
   if (!landmarks_file.empty()) {
     landmarks_ = std::make_unique<baldr::TDALTLandmarkIndex>(landmarks_file);
@@ -103,6 +105,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
                                                                       const mode_costing_t& mode_costing,
                                                                       const sif::TravelMode mode,
                                                                       const Options& options) {
+  // arrive_by is handled by TimeDepReverse in route_action; TDALT only serves depart_at/current.
   if (options.date_time_type() == Options::arrive_by) {
     return {};
   }
@@ -115,6 +118,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
   access_mode_ = costing_->access_mode();
   costing_->SetGraphReader(&graphreader);
 
+  // Forward tree tracks simulated departure time along G (traffic, truck_ban, restrictions).
   forward_time_info_ = TimeInfo::make(origin, graphreader, &tz_cache_);
   if (!forward_time_info_.valid) {
     return {};
@@ -133,6 +137,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
   InitBackwardSearch(graphreader, origin_ll, dest_ll, origin_node, destination_node, mode_costing,
                      mode);
   SetDestination(graphreader, dest);
+  // Backward seeds on opposing edges at destination; costs are λ, not time-dependent.
   SetDestinationBackward(graphreader, dest);
   SetOrigin(graphreader, origin, forward_time_info_);
 
@@ -140,6 +145,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
     return {};
   }
 
+  // --- Algorithm 1 main loop (Meet → Bound → Forward-only) ---
   int n = 0;
   while (true) {
     if (interrupt && (++n % kInterruptIterationsInterval) == 0) {
@@ -150,6 +156,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
       return FormPath(graphreader, options, origin, dest, forward_time_info_);
     }
 
+    // Phase 3: forward A* on G, expanding only into nodes discovered by backward G_λ search.
     if (phase_ == Phase::kForwardOnly) {
       if (!ExpandOneForward(graphreader)) {
         return destination_label_idx_ != kInvalidLabel
@@ -166,6 +173,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
     }
 
     if (phase_ == Phase::kBound && backward_empty) {
+      // Backward queue drained — M is complete; finish on forward tree only.
       phase_ = Phase::kForwardOnly;
       if (destination_label_idx_ != kInvalidLabel) {
         return FormPath(graphreader, options, origin, dest, forward_time_info_);
@@ -175,6 +183,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
     const float backward_min =
         backward_empty ? std::numeric_limits<float>::max() : adjacencylist_reverse_.min_sortcost();
 
+    // β = min open backward key (g_λ + π*_b). When β > K·μ, no path via M can beat μ.
     if (phase_ == Phase::kBound && !backward_empty &&
         backward_min > approximation_factor_ * mu_) {
       phase_ = Phase::kForwardOnly;
@@ -188,6 +197,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
       ExpandOneForward(graphreader);
     }
 
+    // Phases 1–2: alternate backward G_λ expansion (collects M, prunes at forward-settled nodes).
     if (!backward_empty) {
       ExpandOneBackward(graphreader);
     }
@@ -234,6 +244,7 @@ void TimeDependentBidirALT::Clear() {
 }
 
 float TimeDependentBidirALT::BaseBackwardPotential(const GraphId& node) const {
+  // π_b(v) — ALT lower bound from origin s to v on G_λ (backward search heuristic).
   if (landmarks_ && landmarks_->available()) {
     return landmarks_->potential_from_source(node, origin_node_id_);
   }
@@ -242,6 +253,9 @@ float TimeDependentBidirALT::BaseBackwardPotential(const GraphId& node) const {
 
 float TimeDependentBidirALT::TightenedBackwardPotential(GraphReader& graphreader,
                                                         const GraphId& node) const {
+  // π*_b(w) = max( π_b(w),  f(v*) + π_f(v*) − π_f(w) )  — Eq. 4 in the paper.
+  // v* = last_forward_settled_, f(v*) = last_forward_key_ (g+π_f at checkpoint).
+  // Tightens the backward heuristic using forward progress without using c(·,τ) backward.
   if (!landmarks_ || !landmarks_->available()) {
     const graph_tile_ptr tile = graphreader.GetGraphTile(node);
     if (tile == nullptr) {
@@ -254,6 +268,7 @@ float TimeDependentBidirALT::TightenedBackwardPotential(GraphReader& graphreader
   if (!last_forward_settled_.is_valid()) {
     return pi_b;
   }
+  // π_f(v*), π_f(w) on G_λ; combined with f(v*) to bound how far backward search must go.
   const float pi_f_v = landmarks_->potential_to_target(last_forward_settled_, destination_node_id_);
   const float pi_f_w = landmarks_->potential_to_target(node, destination_node_id_);
   return std::max(pi_b, last_forward_key_ + pi_f_v - pi_f_w);
@@ -264,6 +279,7 @@ float TimeDependentBidirALT::BackwardPotential(GraphReader& graphreader, const G
 }
 
 void TimeDependentBidirALT::RebuildBackwardQueueKeys(GraphReader& graphreader) {
+  // Checkpoint advanced: recompute sortcost = g_λ + π*_b for all open backward labels.
   adjacencylist_reverse_.clear();
   for (uint32_t idx = 0; idx < edgelabels_reverse_.size(); ++idx) {
     const auto& label = edgelabels_reverse_[idx];
@@ -283,6 +299,7 @@ void TimeDependentBidirALT::RebuildBackwardQueueKeys(GraphReader& graphreader) {
 void TimeDependentBidirALT::MaybeAdvanceCheckpoint(GraphReader& graphreader,
                                                    const GraphId& node,
                                                    const uint32_t pred_idx) {
+  // Every checkpoint_count steps along forward cost, record (v*, f(v*)) and rebuild β queue.
   if (!landmarks_ || !landmarks_->available() || checkpoint_count_ == 0 ||
       forward_potential_delta_ <= 0.f) {
     return;
@@ -306,6 +323,7 @@ void TimeDependentBidirALT::MaybeAdvanceCheckpoint(GraphReader& graphreader,
 }
 
 float TimeDependentBidirALT::ForwardPotential(GraphReader& graphreader, const GraphId& node) const {
+  // π_f(v) — ALT lower bound from v to target t on G_λ (forward search heuristic).
   if (landmarks_ && landmarks_->available()) {
     return landmarks_->potential_to_target(node, destination_node_id_);
   }
@@ -525,6 +543,7 @@ bool TimeDependentBidirALT::ExpandForwardInner(GraphReader& graphreader,
   }
 
   uint8_t flow_sources;
+  // c(u,v,τ): time-dependent edge weight on G; τ advances via time_info.forward(pred_secs).
   const Cost edge_cost =
       costing_->EdgeCost(meta.edge, meta.edge_id, tile, time_info, flow_sources);
   auto reader_getter = [&graphreader]() { return baldr::LimitedGraphReader(graphreader); };
@@ -719,6 +738,7 @@ bool TimeDependentBidirALT::ExpandOneForward(GraphReader& graphreader) {
   }
 
   if (phase_ == Phase::kForwardOnly && backward_settled_nodes_.count(node.value) == 0) {
+    // Phase 3: skip expansion from nodes outside backward candidate set M.
     return true;
   }
 
@@ -728,6 +748,7 @@ bool TimeDependentBidirALT::ExpandOneForward(GraphReader& graphreader) {
 
 void TimeDependentBidirALT::SetDestinationBackward(GraphReader& graphreader,
                                                    const valhalla::Location& dest) {
+  // Seed backward queue at destination: traverse opposing edges with λ costs (G_λ, no TimeInfo).
   const bool has_other_edges =
       std::any_of(dest.correlation().edges().begin(), dest.correlation().edges().end(),
                   [](const valhalla::PathEdge& e) { return !e.begin_node(); });
@@ -761,6 +782,7 @@ void TimeDependentBidirALT::SetDestinationBackward(GraphReader& graphreader,
     Cost cost;
     cost.secs = LowerBoundCost::seconds(opp_dir_edge, traversed);
     cost.cost = cost.secs + edge.distance();
+    // Initial g_λ at destination seed: partial λ along opposing edge, not c(·,τ).
 
     const GraphId end_node = opp_dir_edge->endnode();
     const float sortcost = cost.cost + BackwardPotential(graphreader, end_node);
@@ -811,6 +833,7 @@ bool TimeDependentBidirALT::ExpandBackwardInner(GraphReader& graphreader,
   const DirectedEdge* opp_edge = endtile->directededge(opp_edge_id);
 
   Cost newcost = pred.cost();
+  // Accumulate g_λ along reverse tree: g_λ(w) = g_λ(u) + λ(u,w), not c(u,w,τ).
   newcost.secs += LowerBoundCost::seconds(opp_edge);
   newcost.cost = pred.cost().cost + LowerBoundCost::seconds(opp_edge);
 
@@ -825,6 +848,7 @@ bool TimeDependentBidirALT::ExpandBackwardInner(GraphReader& graphreader,
   }
 
   const float sortcost = newcost.cost + BackwardPotential(graphreader, meta.edge->endnode());
+  // Backward A* key: g_λ(w) + π*_b(w) — uses λ weights, never c(·,τ).
 
   const uint32_t idx = edgelabels_reverse_.size();
   edgelabels_reverse_.emplace_back(pred_idx, meta.edge_id, opp_edge_id, meta.edge, newcost, sortcost,
@@ -890,6 +914,7 @@ bool TimeDependentBidirALT::ExpandOneBackward(GraphReader& graphreader) {
   const GraphId node = pred.endnode();
   OnNodeSettled(node, false, pred_idx);
 
+  // §7.1: do not expand backward through nodes already settled forward (meet pruning).
   if (forward_settled_nodes_.count(node.value) > 0) {
     return true;
   }
@@ -918,6 +943,7 @@ void TimeDependentBidirALT::OnNodeSettled(const GraphId& node, const bool forwar
     return;
   }
 
+  // Phase 1 meet: node v settled on both trees ⇒ μ = g_fwd(v) + g_bwd(v) ≤ γ_τ₀(optimal).
   if (!forward_settled_nodes_.count(node.value) || !backward_settled_nodes_.count(node.value)) {
     return;
   }
@@ -938,6 +964,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::FormPath(GraphReader& 
                                                                     const valhalla::Location& origin,
                                                                     const valhalla::Location& dest,
                                                                     const TimeInfo& time_info) {
+  // Extract topology from forward labels (g costs); final γ_τ₀ uses c(u,v,τ) via recost_forward.
   if (destination_label_idx_ == kInvalidLabel) {
     return {};
   }
@@ -1001,6 +1028,7 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::FormPath(GraphReader& 
   }
 
   try {
+    // γ_τ₀(p): re-sum c(u,v,τ) along the chosen topology; search used c on G, λ only bounded M.
     const bool invariant = options.date_time_type() == Options::invariant;
     const bool ignore_access_on_recost = options.costing_type() != Costing::truck_ban;
     recost_forward(graphreader, *costing_, edge_cb, label_cb, source_pct, target_pct, time_info,

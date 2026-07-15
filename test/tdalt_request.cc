@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+// Parse-time guards for TDALT routing policy: invariant rejected on /route (error 169).
+
 using namespace valhalla;
 
 TEST(TdaltRequest, invariant_route_rejected) {

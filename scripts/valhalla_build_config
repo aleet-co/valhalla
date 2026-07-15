@@ -173,6 +173,7 @@ config = {
             "scan_tar": False,
         },
         "tdalt": {
+            # Offline ALT preprocessing (G_lambda); consumed by valhalla_build_tdalt_landmarks.
             "landmark_count": 16,
             "landmarks_file": "/custom_files/tdalt_landmarks.bin",
         },
@@ -259,10 +260,11 @@ config = {
             }
         },
         "tdalt": {
+            # Runtime TDALT (Algorithm 1): enabled=false until landmarks ship in base image.
             "enabled": False,
-            "fallback_to_unidirectional": True,
-            "approximation_factor": 1.0,
-            "checkpoint_count": 10,
+            "fallback_to_unidirectional": True,  # TimeDepForward when landmarks missing
+            "approximation_factor": 1.0,         # K in Phase 2 bound (1.0 = exact)
+            "checkpoint_count": 10,              # π*_b tightened potential checkpoints
             "max_reserved_labels_count": 1000000,
         },
     },

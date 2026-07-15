@@ -36,7 +36,7 @@ using baldr::NodeInfo;
 using baldr::NodeTransition;
 using baldr::Use;
 
-// Finest driving hierarchy level (TileHierarchy "local" = level 2).
+// Finest driving hierarchy level — landmark distances are computed on local-level G_λ only.
 constexpr uint8_t kLocalLevel = 2;
 
 // Europe-scale subsampling: keep every Nth level-0 node, capped at kMaxCandidates.
@@ -58,6 +58,7 @@ bool EdgeTraversableReverse(const DirectedEdge* edge) {
 }
 
 DistMap RunLambdaDijkstra(GraphReader& reader, const GraphId& source, const bool forward) {
+  // Compute D_λ(·,·) from one landmark: sum of λ(u,v) along shortest paths on G_λ.
   DistMap dist;
   using QueueItem = std::pair<float, uint64_t>;
   std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
@@ -235,6 +236,8 @@ float MinLandmarkDistance(GraphReader& reader,
 std::vector<GraphId> SelectLandmarksMaxCover(GraphReader& reader,
                                              const std::vector<GraphId>& candidates,
                                              const uint32_t landmark_count) {
+  // maxCover landmark selection: each new landmark maximizes min λ-distance to existing set,
+  // spreading ALT pivots across the routable network for tighter potentials.
   if (candidates.empty()) {
     throw std::runtime_error("No level-" + std::to_string(kLocalLevel) +
                              " candidate nodes found for TDALT landmark selection");
@@ -370,6 +373,7 @@ void build_tdalt_landmarks(const boost::property_tree::ptree& config) {
   const auto candidates = CollectCandidateNodes(reader);
   const auto landmarks = SelectLandmarksMaxCover(reader, candidates, landmark_count);
 
+  // For each landmark L: dist_from[L](v)=D_λ(L,v), dist_to[L](v)=D_λ(v,L) on local G_λ.
   std::vector<DistMap> dist_to(landmark_count);
   std::vector<DistMap> dist_from(landmark_count);
 

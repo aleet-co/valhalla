@@ -13,6 +13,9 @@
 #include <random>
 #include <vector>
 
+// Verifies λ(u,v) ≤ c(u,v,τ) for truck_ban costing — if violated, backward keys on G_λ
+// could underestimate true forward cost and TDALT would lose correctness.
+
 using namespace valhalla;
 using namespace valhalla::baldr;
 using namespace valhalla::sif;

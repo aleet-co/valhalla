@@ -119,6 +119,7 @@ thor_worker_t::thor_worker_t(const boost::property_tree::ptree& config,
   hierarchy_limits_config_bidirectional_astar =
       parse_hierarchy_limits_from_config(config, "bidirectional_astar", true);
 
+  // Probe mmap landmark index once; route_action uses landmarks_available_ for algorithm choice.
   landmarks_available_ = tdalt_.landmarks_available();
 
   // signal that the worker started successfully

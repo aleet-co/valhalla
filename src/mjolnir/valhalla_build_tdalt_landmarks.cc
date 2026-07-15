@@ -15,7 +15,8 @@ int main(int argc, char** argv) {
       program,
       program + " " + VALHALLA_PRINT_VERSION + "\n\n"
       "valhalla_build_tdalt_landmarks builds the TDALT ALT landmark distance sidecar used by\n"
-      "time-dependent bidirectional routing. This is separate from the POI landmarks.sqlite index.\n\n");
+      "time-dependent bidirectional routing (G_lambda lower-bound graph). Separate from POI\n"
+      "landmarks.sqlite. Output is mmap-loaded at runtime for π_f/π_b potentials.\n\n");
 
     options.add_options()
       ("h,help", "Print this help message.")
