@@ -49,9 +49,10 @@ namespace thor {
  *                  using the latest forward checkpoint node v* — tightens β without breaking
  *                  admissibility.
  *   μ              Upper bound on optimal route cost γ_τ₀(p*) after the first meet node v:
- *                  μ = g_fwd(v) + g_bwd(v). Phase 2 stops expanding backward once β > K·μ.
+ *                  μ = g_fwd(v) + g_bwd(v). Phase 2 stops expanding backward once β > μ/K.
  *   β              Minimum sort key in the backward priority queue (g_λ + π*_b).
- *   K              Approximation factor (approximation_factor_, default 1.0 = exact).
+ *   K              Approximation factor (approximation_factor_, default 1.0 = exact). Larger K
+ *                  ends Phase 2 earlier for speed, at the cost of a K-bounded suboptimal path.
  *   M              Set of nodes settled by the backward G_λ search; Phase 3 forward search
  *                  may only expand through nodes in M (backward_settled_nodes_).
  *
@@ -62,7 +63,7 @@ namespace thor {
  * Three phases:
  *   kMeet         — bidirectional expansion until some v ∈ V is settled by both trees;
  *                   set μ = g_fwd(v) + g_bwd(v)
- *   kBound        — continue while β ≤ K·μ; add each backward-settled node to M
+ *   kBound        — continue while β ≤ μ/K; add each backward-settled node to M
  *   kForwardOnly  — forward on G within M until t is settled; FormPath recosts with c(·,τ)
  */
 class TimeDependentBidirALT : public PathAlgorithm {

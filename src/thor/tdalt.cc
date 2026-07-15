@@ -183,9 +183,11 @@ std::vector<std::vector<PathInfo>> TimeDependentBidirALT::GetBestPath(valhalla::
     const float backward_min =
         backward_empty ? std::numeric_limits<float>::max() : adjacencylist_reverse_.min_sortcost();
 
-    // β = min open backward key (g_λ + π*_b). When β > K·μ, no path via M can beat μ.
+    // β = min open backward key (g_λ + π*_b). Paper stopping rule: switch to Phase 3 once
+    // μ < K·β (i.e. β > μ/K). K = 1 is exact (β > μ, no path via M can beat μ); K > 1 stops
+    // Phase 2 earlier, trading a bounded K-approximation of the optimum for a smaller M.
     if (phase_ == Phase::kBound && !backward_empty &&
-        backward_min > approximation_factor_ * mu_) {
+        approximation_factor_ * backward_min > mu_) {
       phase_ = Phase::kForwardOnly;
       if (destination_label_idx_ != kInvalidLabel) {
         return FormPath(graphreader, options, origin, dest, forward_time_info_);
