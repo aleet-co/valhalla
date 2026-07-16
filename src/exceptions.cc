@@ -156,6 +156,7 @@ const std::unordered_map<int, std::string> warning_codes = {
   {301, R"(1:Many TimeDistanceMatrix was requested, but server only allows Many:Many CostMatrix)"},
   {302, R"("search_filter.level" was specified without a custom "search_cutoff", setting default default cutoff to )"},
   {303, R"("search_cutoff" exceeds maximum allowed value due to "search_filter.level" being specified, clamping cutoff to )"},
+  {304, R"(CCH matrix was requested but is unavailable or unsupported for this request; falling back to TimeDistanceMatrix)"},
   // 4xx is used when we do sneaky important things the user should be aware of
   {400, R"(CostMatrix turned off destination-only on a second pass for connections: )"},
   {401, R"(Routing failed on first pass, retrying with relaxed restrictions)"},
