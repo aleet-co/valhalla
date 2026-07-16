@@ -13,6 +13,8 @@
 #include "baldr/graphid.h"
 #include "baldr/time_info.h"
 #include "midgard/logging.h"
+#include "thor/matrixalgorithm.h"
+#include "thor/pathalgorithm.h"
 
 namespace valhalla {
 namespace thor {
@@ -72,12 +74,17 @@ void UpwardTree(const cch::CchOrder& order,
                 const cch::CustomizedMetric& metric,
                 uint32_t src,
                 std::unordered_map<uint32_t, float>& up_dist,
-                std::unordered_map<uint32_t, uint32_t>& up_parent) {
+                std::unordered_map<uint32_t, uint32_t>& up_parent,
+                const std::function<void()>* interrupt) {
   using QItem = std::pair<float, uint32_t>;
   std::priority_queue<QItem, std::vector<QItem>, std::greater<>> pq;
   up_dist[src] = 0.f;
   pq.push({0.f, src});
+  size_t n = 0;
   while (!pq.empty()) {
+    // Allow this process to be aborted (mirror TimeDistanceMatrix::ComputeMatrix).
+    if (interrupt && (n++ % kInterruptIterationsInterval) == 0)
+      (*interrupt)();
     auto [d, u] = pq.top();
     pq.pop();
     auto it = up_dist.find(u);
@@ -100,12 +107,17 @@ void DownwardTree(const cch::CchOrder& order,
                   const cch::CustomizedMetric& metric,
                   uint32_t tgt,
                   std::unordered_map<uint32_t, float>& dn_dist,
-                  std::unordered_map<uint32_t, uint32_t>& dn_parent) {
+                  std::unordered_map<uint32_t, uint32_t>& dn_parent,
+                  const std::function<void()>* interrupt) {
   using QItem = std::pair<float, uint32_t>;
   std::priority_queue<QItem, std::vector<QItem>, std::greater<>> pq;
   dn_dist[tgt] = 0.f;
   pq.push({0.f, tgt});
+  size_t n = 0;
   while (!pq.empty()) {
+    // Allow this process to be aborted (mirror TimeDistanceMatrix::ComputeMatrix).
+    if (interrupt && (n++ % kInterruptIterationsInterval) == 0)
+      (*interrupt)();
     auto [d, u] = pq.top();
     pq.pop();
     auto it = dn_dist.find(u);
@@ -168,7 +180,8 @@ void ExpandCorridorHops(const cch::CchGraph& g, std::unordered_set<uint32_t>& co
 void TdRepair(const cch::CchGraph& g, const cch::CustomizedMetric& metric,
               uint32_t source, const std::vector<uint32_t>& targets, int64_t depart_sow,
               const std::unordered_set<uint32_t>& corridor,
-              std::unordered_map<uint32_t, float>& arrival) {
+              std::unordered_map<uint32_t, float>& arrival,
+              const std::function<void()>* interrupt) {
   using QItem = std::pair<float, uint32_t>;
   std::priority_queue<QItem, std::vector<QItem>, std::greater<>> pq;
   std::unordered_map<uint32_t, float> dist;
@@ -176,7 +189,11 @@ void TdRepair(const cch::CchGraph& g, const cch::CustomizedMetric& metric,
   dist[source] = 0.f;
   pq.push({0.f, source});
   size_t found = 0;
+  size_t n = 0;
   while (!pq.empty() && found < want.size()) {
+    // Allow this process to be aborted (mirror TimeDistanceMatrix::ComputeMatrix).
+    if (interrupt && (n++ % kInterruptIterationsInterval) == 0)
+      (*interrupt)();
     auto [d, u] = pq.top();
     pq.pop();
     auto it = dist.find(u);
@@ -278,13 +295,31 @@ bool CCHMatrix::SourceToTarget(Api& request,
 
   for (int s = 0; s < srcs.size(); ++s) {
     if (src_idx[s] < 0) {
-      // unreachable/unsnapped source row -> leave defaults (0) and continue (MVP).
+      // Unsnapped source: no target is reachable from this row. Still write the
+      // index metadata for EVERY cell (from_indices=s, to_indices=t) -- only the
+      // time value reflects reachability -- and mark each time with the kMaxCost
+      // unreachable sentinel (mirroring TimeDistanceMatrix's default best_cost)
+      // so the shared serializer emits null rather than a spurious 0.
+      for (int t = 0; t < tgts.size(); ++t) {
+        const size_t pbf = static_cast<size_t>(s) * tgts.size() + t;
+        matrix.mutable_from_indices()->Set(pbf, s);
+        matrix.mutable_to_indices()->Set(pbf, t);
+        matrix.mutable_times()->Set(pbf, kMaxCost);
+        matrix.mutable_distances()->Set(pbf, 0); // MVP: distance not tracked (time-only)
+      }
       continue;
     }
     // Shared upward tree per source.
+    //
+    // The CH phase (this upward tree and each target's downward tree) is
+    // intentionally BAN-FREE: it searches purely on static `time_s` to select a
+    // corridor of candidate base nodes. No shortcut `B` (forbidden) mask is ever
+    // consulted here (see design C). The base-graph `TdRepair` pass below is the
+    // sole ban authority -- it re-evaluates time-dependent bans on BASE edges at
+    // their actual entry time. Do not add shortcut-ban checks to the CH search.
     std::unordered_map<uint32_t, float> up_dist;
     std::unordered_map<uint32_t, uint32_t> up_parent;
-    UpwardTree(order_, metric_, static_cast<uint32_t>(src_idx[s]), up_dist, up_parent);
+    UpwardTree(order_, metric_, static_cast<uint32_t>(src_idx[s]), up_dist, up_parent, interrupt_);
 
     // Build one corridor spanning all reachable targets, then TD-repair once.
     std::unordered_set<uint32_t> corridor;
@@ -303,7 +338,8 @@ bool CCHMatrix::SourceToTarget(Api& request,
         continue;
       std::unordered_map<uint32_t, float> dn_dist;
       std::unordered_map<uint32_t, uint32_t> dn_parent;
-      DownwardTree(order_, metric_, static_cast<uint32_t>(tgt_idx[t]), dn_dist, dn_parent);
+      DownwardTree(order_, metric_, static_cast<uint32_t>(tgt_idx[t]), dn_dist, dn_parent,
+                   interrupt_);
       // Meeting node = argmin over up_dist ∩ dn_dist.
       float best = kInf;
       for (const auto& [node, du] : up_dist) {
@@ -330,16 +366,23 @@ bool CCHMatrix::SourceToTarget(Api& request,
 
     std::unordered_map<uint32_t, float> arrival;
     TdRepair(graph_, metric_, static_cast<uint32_t>(src_idx[s]), reachable_targets, depart_sow[s],
-             corridor, arrival);
+             corridor, arrival, interrupt_);
 
     for (int t = 0; t < tgts.size(); ++t) {
       const size_t pbf = static_cast<size_t>(s) * tgts.size() + t;
       matrix.mutable_from_indices()->Set(pbf, s);
       matrix.mutable_to_indices()->Set(pbf, t);
-      float secs = 0.f;
+      // Default to the kMaxCost unreachable sentinel (mirrors TimeDistanceMatrix's
+      // default Destination::best_cost, which the shared serializer maps to null).
+      // Only a target that TdRepair genuinely SETTLED keeps its real arrival --
+      // which may legitimately be 0 for a self/zero-distance pair. Snapped-but-
+      // unsettled (true path left the corridor) and unsnapped (tgt_idx < 0)
+      // targets stay at the sentinel so they are not reported as time=0.
+      float secs = kMaxCost;
       if (tgt_idx[t] >= 0) {
         auto it = arrival.find(static_cast<uint32_t>(tgt_idx[t]));
-        secs = (it == arrival.end()) ? 0.f : it->second;
+        if (it != arrival.end())
+          secs = it->second;
       }
       matrix.mutable_times()->Set(pbf, secs);
       matrix.mutable_distances()->Set(pbf, 0); // MVP: distance not tracked (time-only)
