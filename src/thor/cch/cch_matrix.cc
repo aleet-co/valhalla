@@ -246,9 +246,14 @@ bool CCHMatrix::SourceToTarget(Api& request,
   for (int t = 0; t < tgts.size(); ++t)
     tgt_idx[t] = snap(tgts[t]);
 
-  // Depart second-of-week (UTC) per source. Mirror TimeDistanceMatrix::SetTime:
-  // TimeInfo::make derives the source-side timezone from the graph and yields a
-  // UTC epoch (local_time), which we fold to a Monday-aligned second-of-week.
+  // Depart second-of-week per source. The tz is derived from the snapped source
+  // node exactly as TimeDistanceMatrix::SetTime does (TimeInfo::make, which also
+  // normalizes a "current" date_time). The epoch MUST be a PLAIN Unix timestamp
+  // to match the customizer's mask clock: DeriveMask indexes bans on
+  // utc_second_of_week(kDefaultReferenceWeek + slot*900), a plain-Unix grid.
+  // TimeInfo::local_time (and DateTime::seconds_since_epoch) are leap-inclusive
+  // (date::to_utc_time), ~27s off, which can flip a ban near a slot boundary --
+  // so we take sys_time (get_ldt(...).get_sys_time()) instead of local_time.
   baldr::DateTime::tz_sys_info_cache_t tz_cache;
   auto& mutable_srcs = *request.mutable_options()->mutable_sources();
   const std::string& default_dt = options.date_time();
@@ -258,7 +263,16 @@ bool CCHMatrix::SourceToTarget(Api& request,
     if (src->date_time().empty() && !default_dt.empty())
       src->set_date_time(default_dt);
     auto ti = baldr::TimeInfo::make(*src, graphreader, &tz_cache);
-    int64_t epoch = ti.valid ? static_cast<int64_t>(ti.local_time) : 0;
+    int64_t epoch = 0;
+    if (ti.valid) {
+      const auto* tz = baldr::DateTime::get_tz_db().from_index(ti.timezone_index);
+      if (tz) {
+        epoch = baldr::DateTime::get_ldt(baldr::DateTime::get_formatted_date(src->date_time()), tz)
+                    .get_sys_time()
+                    .time_since_epoch()
+                    .count();
+      }
+    }
     depart_sow[s] = cch::utc_second_of_week(epoch);
   }
 
@@ -275,6 +289,14 @@ bool CCHMatrix::SourceToTarget(Api& request,
     // Build one corridor spanning all reachable targets, then TD-repair once.
     std::unordered_set<uint32_t> corridor;
     corridor.insert(static_cast<uint32_t>(src_idx[s]));
+    // Up-side unpack is source-invariant: unpack it once per source (hoisted
+    // out of the target loop; set-inserts are idempotent so this is a pure
+    // speedup with no behavior change).
+    for (const auto& kv : up_dist) {
+      auto pit = up_parent.find(kv.first);
+      if (pit != up_parent.end())
+        UnpackBaseNodes(order_, graph_, pit->second, corridor);
+    }
     std::vector<uint32_t> reachable_targets;
     for (int t = 0; t < tgts.size(); ++t) {
       if (tgt_idx[t] < 0)
@@ -293,14 +315,10 @@ bool CCHMatrix::SourceToTarget(Api& request,
         continue; // target not connected in the up/down DAG
       corridor.insert(static_cast<uint32_t>(tgt_idx[t]));
       reachable_targets.push_back(static_cast<uint32_t>(tgt_idx[t]));
-      // Unpack shortcuts spanned by the up/down trees into the corridor. This
+      // Unpack the dn-side shortcuts spanned by this target's down-tree into the
+      // corridor (target-dependent, so it stays inside the loop). This
       // over-includes (safe) rather than tracing only the meeting path; the
       // hop-ball below is what actually admits ban detours.
-      for (const auto& kv : up_dist) {
-        auto pit = up_parent.find(kv.first);
-        if (pit != up_parent.end())
-          UnpackBaseNodes(order_, graph_, pit->second, corridor);
-      }
       for (const auto& kv : dn_dist) {
         auto pit = dn_parent.find(kv.first);
         if (pit != dn_parent.end())
