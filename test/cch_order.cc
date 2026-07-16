@@ -2,6 +2,7 @@
 #include "thor/cch/order.h"
 #include "test.h"
 #include <gtest/gtest.h>
+#include <set>
 
 using namespace valhalla::thor::cch;
 
@@ -59,6 +60,31 @@ TEST(CchOrder, SaveLoadRoundTrip) {
   EXPECT_EQ(loaded.num_base_edges, order.num_base_edges);
   EXPECT_EQ(loaded.tile_build_hash, order.tile_build_hash);
   std::remove(path.c_str());
+}
+
+void expect_valid_order(const CchOrder& order, size_t n) {
+  EXPECT_EQ(order.rank.size(), n);
+  std::set<uint32_t> ranks(order.rank.begin(), order.rank.end());
+  EXPECT_EQ(ranks.size(), n);
+  for (uint32_t u = 0; u < order.fwd_adj.size(); ++u) {
+    for (auto [v, eid] : order.fwd_adj[u])
+      EXPECT_LT(order.rank[u], order.rank[v]);
+  }
+  for (const auto& sc : order.shortcuts) {
+    EXPECT_LT(sc.left, order.num_base_edges + order.shortcuts.size());
+    EXPECT_LT(sc.right, order.num_base_edges + order.shortcuts.size());
+  }
+}
+
+TEST(CchOrder, MultiThreadProducesValidOrder) {
+  auto g = line_graph();
+  auto o1 = BuildOrder(g, 1);
+  auto o4 = BuildOrder(g, 4);
+  expect_valid_order(o1, 4);
+  expect_valid_order(o4, 4);
+  // Deterministic priorities → same contraction order regardless of thread count.
+  EXPECT_EQ(o1.rank, o4.rank);
+  EXPECT_EQ(o1.shortcuts.size(), o4.shortcuts.size());
 }
 
 } // namespace

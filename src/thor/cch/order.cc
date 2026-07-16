@@ -1,10 +1,17 @@
 #include "thor/cch/order.h"
 
+#include "midgard/logging.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
-#include <queue>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace valhalla {
 namespace thor {
@@ -13,129 +20,265 @@ namespace cch {
 namespace {
 
 // Edge id space: base edges [0, num_base), shortcuts [num_base, num_base+scount).
-// During contraction we track hop-length per connecting edge for edge-difference.
 struct DynEdge {
-  uint32_t edge_id; // into base or shortcut space
-  uint32_t hops;    // number of base edges represented (for unit-weight order)
+  uint32_t edge_id = 0;
+  uint32_t hops = 0;
 };
+
+struct Priority {
+  uint32_t degree = 0;
+  uint32_t id = 0;
+  bool operator<(const Priority& o) const {
+    if (degree != o.degree)
+      return degree < o.degree;
+    return id < o.id;
+  }
+};
+
+struct Proposed {
+  CchShortcut sc;
+  uint32_t hops = 0;
+};
+
+uint32_t resolve_concurrency(uint32_t concurrency) {
+  if (concurrency == 0) {
+    const unsigned hc = std::thread::hardware_concurrency();
+    return hc == 0 ? 1u : hc;
+  }
+  return concurrency;
+}
+
+template <typename Fn>
+void parallel_for(uint32_t nthreads, size_t n, Fn&& fn) {
+  if (n == 0)
+    return;
+  nthreads = std::max(1u, std::min(nthreads, static_cast<uint32_t>(n)));
+  if (nthreads == 1) {
+    for (size_t i = 0; i < n; ++i)
+      fn(i);
+    return;
+  }
+  std::vector<std::thread> threads;
+  threads.reserve(nthreads);
+  std::atomic<size_t> next{0};
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    threads.emplace_back([&]() {
+      for (;;) {
+        const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= n)
+          break;
+        fn(i);
+      }
+    });
+  }
+  for (auto& th : threads)
+    th.join();
+}
+
+void merge_edge(std::unordered_map<uint32_t, DynEdge>& adj, uint32_t key, DynEdge e) {
+  auto it = adj.find(key);
+  if (it == adj.end() || e.hops < it->second.hops)
+    adj[key] = e;
+}
 
 } // namespace
 
-CchOrder BuildOrder(const CchGraph& g) {
+CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  auto elapsed_s = [&]() {
+    return std::chrono::duration<double>(clock::now() - t0).count();
+  };
+
+  const uint32_t threads = resolve_concurrency(concurrency);
   const uint32_t n = static_cast<uint32_t>(g.nodes.size());
   CchOrder order;
   order.num_base_edges = static_cast<uint32_t>(g.edges.size());
   order.rank.assign(n, 0);
   order.tile_build_hash = g.tile_build_hash;
 
-  // Dynamic adjacency: out[u][v] = best DynEdge, in[v] = set of u.
+  LOG_INFO("cch order: independent-set contraction  nodes=" + std::to_string(n) +
+           " base_edges=" + std::to_string(order.num_base_edges) +
+           " threads=" + std::to_string(threads));
+
   std::vector<std::unordered_map<uint32_t, DynEdge>> out(n), inc(n);
-  std::vector<uint32_t> contracted_neighbors(n, 0);
-
-  auto merge = [](std::unordered_map<uint32_t, DynEdge>& adj, uint32_t key, DynEdge e) {
-    auto it = adj.find(key);
-    if (it == adj.end() || e.hops < it->second.hops)
-      adj[key] = e;
-  };
-
   for (uint32_t ei = 0; ei < g.edges.size(); ++ei) {
     const auto& e = g.edges[ei];
-    merge(out[e.u], e.v, DynEdge{ei, 1});
-    inc[e.v].emplace(e.u, DynEdge{ei, 1});
+    merge_edge(out[e.u], e.v, DynEdge{ei, 1});
+    merge_edge(inc[e.v], e.u, DynEdge{ei, 1});
   }
+  LOG_INFO("cch order: adjacency ready  elapsed_s=" + std::to_string(elapsed_s()));
 
-  // Propose shortcuts around v (no witness pruning: keep every needed shortcut).
-  auto proposed = [&](uint32_t v) {
-    std::vector<CchShortcut> props;
-    for (const auto& [u, e_uv] : inc[v]) {
-      if (u == v)
-        continue;
-      auto ituv = out[u].find(v);
-      if (ituv == out[u].end())
-        continue;
-      for (const auto& [w, e_vw] : out[v]) {
-        if (w == v || w == u)
-          continue;
-        CchShortcut sc;
-        sc.u = u;
-        sc.w = w;
-        sc.middle = v;
-        sc.left = ituv->second.edge_id;
-        sc.right = e_vw.edge_id;
-        props.push_back(sc);
-      }
-    }
-    return props;
-  };
-
-  auto edge_difference = [&](uint32_t v) -> int {
-    int added = static_cast<int>(proposed(v).size());
-    int removed = static_cast<int>(inc[v].size() + out[v].size());
-    return added - removed + static_cast<int>(contracted_neighbors[v]);
-  };
-
-  // Lazy priority queue keyed on edge-difference.
-  std::priority_queue<std::pair<int, uint32_t>, std::vector<std::pair<int, uint32_t>>,
-                      std::greater<>>
-      pq;
-  for (uint32_t v = 0; v < n; ++v)
-    pq.push({edge_difference(v), v});
-
-  std::vector<bool> done(n, false);
+  std::vector<uint8_t> active(n, 1);
+  uint32_t remaining = n;
   uint32_t rank_counter = 0;
+  uint32_t phase = 0;
+  auto last_log = clock::now();
 
-  while (!pq.empty()) {
-    auto [key, v] = pq.top();
-    pq.pop();
-    if (done[v])
-      continue;
-    int cur = edge_difference(v);
-    if (!pq.empty() && cur > pq.top().first) {
-      pq.push({cur, v});
-      continue;
-    }
+  std::vector<Priority> priority(n);
+  std::vector<uint8_t> in_is(n, 0);
+  std::vector<uint32_t> iset;
+  iset.reserve(std::max<uint32_t>(1, n / 8));
 
-    // Contract v: materialize shortcuts.
-    for (const auto& [u, e_uv] : inc[v]) {
-      if (u == v)
-        continue;
-      auto ituv = out[u].find(v);
-      if (ituv == out[u].end())
-        continue;
-      for (const auto& [w, e_vw] : out[v]) {
-        if (w == v || w == u)
-          continue;
-        CchShortcut sc;
-        sc.u = u;
-        sc.w = w;
-        sc.middle = v;
-        sc.left = ituv->second.edge_id;
-        sc.right = e_vw.edge_id;
-        uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
-        uint32_t sc_hops = ituv->second.hops + e_vw.hops;
-        order.shortcuts.push_back(sc);
-        merge(out[u], w, DynEdge{sc_id, sc_hops});
-        inc[w].emplace(u, DynEdge{sc_id, sc_hops});
+  while (remaining > 0) {
+    ++phase;
+
+    // Score active nodes (degree in residual graph).
+    parallel_for(threads, n, [&](size_t v) {
+      if (!active[v])
+        return;
+      priority[v] = Priority{static_cast<uint32_t>(out[v].size() + inc[v].size()),
+                             static_cast<uint32_t>(v)};
+    });
+
+    // Local minima w.r.t. (degree, id) form an independent set.
+    parallel_for(threads, n, [&](size_t v) {
+      in_is[v] = 0;
+      if (!active[v])
+        return;
+      const Priority& pv = priority[v];
+      for (const auto& [w, _] : out[v]) {
+        if (active[w] && !(pv < priority[w]))
+          return;
       }
+      for (const auto& [u, _] : inc[v]) {
+        if (active[u] && !(pv < priority[u]))
+          return;
+      }
+      in_is[v] = 1;
+    });
+
+    iset.clear();
+    for (uint32_t v = 0; v < n; ++v) {
+      if (in_is[v])
+        iset.push_back(v);
     }
 
-    // Remove v from the dynamic graph.
-    for (const auto& [w, _] : out[v]) {
-      inc[w].erase(v);
-      ++contracted_neighbors[w];
+    // Progress guarantee on pathological plateaus.
+    if (iset.empty()) {
+      uint32_t best = n;
+      for (uint32_t v = 0; v < n; ++v) {
+        if (!active[v])
+          continue;
+        if (best == n || priority[v] < priority[best])
+          best = v;
+      }
+      if (best == n)
+        break;
+      iset.push_back(best);
+      in_is[best] = 1;
     }
-    for (const auto& [u, _] : inc[v]) {
-      out[u].erase(v);
-      ++contracted_neighbors[u];
-    }
-    out[v].clear();
-    inc[v].clear();
 
-    order.rank[v] = rank_counter++;
-    done[v] = true;
+    std::sort(iset.begin(), iset.end(),
+              [&](uint32_t a, uint32_t b) { return priority[a] < priority[b]; });
+
+    // Propose shortcuts for each IS node in parallel (read-only residual adj).
+    std::vector<std::vector<Proposed>> proposals(iset.size());
+    parallel_for(threads, iset.size(), [&](size_t ii) {
+      const uint32_t v = iset[ii];
+      auto& props = proposals[ii];
+      for (const auto& [u, e_uv] : inc[v]) {
+        if (u == v || !active[u])
+          continue;
+        auto ituv = out[u].find(v);
+        if (ituv == out[u].end())
+          continue;
+        for (const auto& [w, e_vw] : out[v]) {
+          if (w == v || w == u || !active[w])
+            continue;
+          Proposed p;
+          p.sc.u = u;
+          p.sc.w = w;
+          p.sc.middle = v;
+          p.sc.left = ituv->second.edge_id;
+          p.sc.right = e_vw.edge_id;
+          p.hops = ituv->second.hops + e_vw.hops;
+          props.push_back(p);
+        }
+      }
+    });
+
+    // Flatten + deterministic merge by (u,w) keeping min hops.
+    size_t total_props = 0;
+    for (const auto& bucket : proposals)
+      total_props += bucket.size();
+    std::vector<Proposed> flat;
+    flat.reserve(total_props);
+    for (auto& bucket : proposals) {
+      flat.insert(flat.end(), bucket.begin(), bucket.end());
+      bucket.clear();
+    }
+    std::sort(flat.begin(), flat.end(), [](const Proposed& a, const Proposed& b) {
+      if (a.sc.u != b.sc.u)
+        return a.sc.u < b.sc.u;
+      if (a.sc.w != b.sc.w)
+        return a.sc.w < b.sc.w;
+      if (a.hops != b.hops)
+        return a.hops < b.hops;
+      return a.sc.middle < b.sc.middle;
+    });
+
+    for (size_t i = 0; i < flat.size();) {
+      size_t j = i + 1;
+      while (j < flat.size() && flat[j].sc.u == flat[i].sc.u && flat[j].sc.w == flat[i].sc.w)
+        ++j;
+      // flat[i] is best for this (u,w) after sort.
+      const Proposed& best = flat[i];
+      const uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
+      order.shortcuts.push_back(best.sc);
+      merge_edge(out[best.sc.u], best.sc.w, DynEdge{sc_id, best.hops});
+      merge_edge(inc[best.sc.w], best.sc.u, DynEdge{sc_id, best.hops});
+      i = j;
+    }
+
+    // Remove IS nodes from residual graph; assign ranks in priority order.
+    for (uint32_t v : iset) {
+      for (const auto& [w, _] : out[v]) {
+        if (active[w])
+          inc[w].erase(v);
+      }
+      for (const auto& [u, _] : inc[v]) {
+        if (active[u])
+          out[u].erase(v);
+      }
+      out[v].clear();
+      inc[v].clear();
+      active[v] = 0;
+      in_is[v] = 0;
+      order.rank[v] = rank_counter++;
+    }
+    remaining -= static_cast<uint32_t>(iset.size());
+
+    const auto now = clock::now();
+    const bool pct_tick =
+        n > 0 && (rank_counter == n ||
+                  (rank_counter % std::max<uint32_t>(1, n / 20) == 0));
+    if (rank_counter == n || pct_tick ||
+        std::chrono::duration<double>(now - last_log).count() >= 15.0) {
+      const double pct = n ? 100.0 * rank_counter / n : 100.0;
+      const double rate = elapsed_s() > 0.0 ? rank_counter / elapsed_s() : 0.0;
+      const double eta_s =
+          rate > 0.0 ? (static_cast<double>(n - rank_counter) / rate) : 0.0;
+      LOG_INFO("cch order: phase=" + std::to_string(phase) + " contracted " +
+               std::to_string(rank_counter) + "/" + std::to_string(n) + " (" +
+               std::to_string(static_cast<int>(pct)) +
+               "%)  is_size=" + std::to_string(iset.size()) +
+               "  shortcuts=" + std::to_string(order.shortcuts.size()) +
+               "  rate_nodes_per_s=" + std::to_string(rate) +
+               "  elapsed_s=" + std::to_string(elapsed_s()) +
+               "  eta_s≈" + std::to_string(eta_s));
+      last_log = now;
+    }
   }
 
+  LOG_INFO("cch order: contraction done  phases=" + std::to_string(phase) +
+           " shortcuts=" + std::to_string(order.shortcuts.size()) +
+           "  elapsed_s=" + std::to_string(elapsed_s()) + " — building up/down adjacency");
+  const auto t_adj = clock::now();
   order.build_adjacency(g);
+  LOG_INFO("cch order: adjacency built  adj_s=" +
+           std::to_string(std::chrono::duration<double>(clock::now() - t_adj).count()) +
+           "  total_s=" + std::to_string(elapsed_s()));
   return order;
 }
 

@@ -7,18 +7,20 @@
 #include <boost/property_tree/ptree.hpp>
 #include <cxxopts.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 
 using namespace valhalla;
 
 // Offline builder for the bans-only CCH matrix artifact. Reads Valhalla tiles,
-// builds the truck subgraph, computes a metric-independent (greedy) contraction
-// order, and writes the resulting CCH artifact to disk.
+// builds the truck subgraph, computes a metric-independent contraction order
+// via parallel independent-set contraction, and writes the CCH artifact.
 
 namespace {
 
@@ -34,6 +36,14 @@ std::set<uint32_t> parse_levels(const std::string& s) {
   return levels;
 }
 
+uint32_t resolve_concurrency(uint32_t concurrency) {
+  if (concurrency == 0) {
+    const unsigned hc = std::thread::hardware_concurrency();
+    return hc == 0 ? 1u : hc;
+  }
+  return concurrency;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -41,6 +51,7 @@ int main(int argc, char* argv[]) {
   boost::property_tree::ptree config;
   std::string output_path, levels_str;
   uint32_t max_class = 7;
+  uint32_t concurrency = 0;
 
   try {
     cxxopts::Options options(
@@ -54,7 +65,8 @@ int main(int argc, char* argv[]) {
       ("i,inline-config", "Inline json config.", cxxopts::value<std::string>())
       ("o,output", "Path to write the CCH artifact.", cxxopts::value<std::string>(output_path)->default_value("/custom_files/cch_truck.bin"))
       ("levels", "Comma-separated hierarchy levels to include (0=highway,1=arterial,2=local).", cxxopts::value<std::string>(levels_str)->default_value("0,1,2"))
-      ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("7"));
+      ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("7"))
+      ("j,concurrency", "Worker threads for subgraph load + contraction (0=hardware_concurrency).", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
     // clang-format on
 
     auto result = options.parse(argc, argv);
@@ -68,19 +80,38 @@ int main(int argc, char* argv[]) {
 
   const std::set<uint32_t> levels = parse_levels(levels_str);
   const auto max_roadclass = static_cast<uint8_t>(max_class);
+  concurrency = resolve_concurrency(concurrency);
 
-  baldr::GraphReader reader(config.get_child("mjolnir"));
+  using clock = std::chrono::steady_clock;
+  const auto t_all = clock::now();
+  auto secs = [](clock::time_point t0) {
+    return std::chrono::duration<double>(clock::now() - t0).count();
+  };
 
-  LOG_INFO("Building truck subgraph...");
-  auto graph = thor::cch::BuildTruckGraph(reader, levels, max_roadclass);
-  LOG_INFO("  nodes=" + std::to_string(graph.nodes.size()) +
-           " edges=" + std::to_string(graph.edges.size()));
+  LOG_INFO("valhalla_build_cch: levels=" + levels_str +
+           " max_class=" + std::to_string(max_class) +
+           " concurrency=" + std::to_string(concurrency) +
+           " output=" + output_path);
 
-  LOG_INFO("Contracting (metric-independent, greedy)...");
-  auto order = thor::cch::BuildOrder(graph);
-  LOG_INFO("  shortcuts=" + std::to_string(order.shortcuts.size()));
+  LOG_INFO("valhalla_build_cch: phase 1/3 Building truck subgraph...");
+  const auto t1 = clock::now();
+  auto graph = thor::cch::BuildTruckGraph(config.get_child("mjolnir"), levels, max_roadclass,
+                                          concurrency);
+  LOG_INFO("valhalla_build_cch: phase 1/3 done  nodes=" + std::to_string(graph.nodes.size()) +
+           " edges=" + std::to_string(graph.edges.size()) +
+           " phase_s=" + std::to_string(secs(t1)));
 
+  LOG_INFO("valhalla_build_cch: phase 2/3 Contracting (parallel independent-set)...");
+  const auto t2 = clock::now();
+  auto order = thor::cch::BuildOrder(graph, concurrency);
+  LOG_INFO("valhalla_build_cch: phase 2/3 done  shortcuts=" +
+           std::to_string(order.shortcuts.size()) + " phase_s=" + std::to_string(secs(t2)));
+
+  LOG_INFO("valhalla_build_cch: phase 3/3 Writing artifact...");
+  const auto t3 = clock::now();
   order.save(output_path);
-  LOG_INFO("Wrote " + output_path);
+  LOG_INFO("valhalla_build_cch: phase 3/3 done  wrote " + output_path +
+           " phase_s=" + std::to_string(secs(t3)) +
+           " total_s=" + std::to_string(secs(t_all)));
   return EXIT_SUCCESS;
 }

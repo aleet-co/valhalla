@@ -9,28 +9,29 @@ using namespace valhalla::thor::cch;
 
 namespace {
 
-CchGraph two_country_line() {
+// Bidirectional triangle: independent-set / low-degree contraction of any
+// vertex creates shortcuts between the remaining pair (unlike a plain line,
+// where endpoint-first contraction yields no fill-in).
+CchGraph two_country_triangle() {
   CchGraph g;
   auto node = [&](uint64_t id, const char* iso) {
     CchNode n; n.graph_id = id; n.country = iso; n.tz_index = 0; g.set_index(id, g.nodes.size());
     g.nodes.push_back(n);
   };
-  // A bidirectional line (mirrors Task 3's line_graph) so contracting an interior
-  // node is forced to create shortcuts regardless of the greedy contraction order.
-  node(0, "PL"); node(1, "DE"); node(2, "PL"); node(3, "PL");
+  node(0, "PL"); node(1, "DE"); node(2, "PL");
   auto add = [&](uint32_t u, uint32_t v, uint8_t rc) {
     CchBaseEdge e; e.u = u; e.v = v; e.time_s = 600; e.roadclass = rc; g.edges.push_back(e);
   };
   // edge 0 enters DE on a secondary road -> subject to Sunday ban; edge 1 enters PL -> never banned.
   add(0, 1, 3); add(1, 0, 3); // 0 <-> 1 (DE / PL)
   add(1, 2, 3); add(2, 1, 3); // 1 <-> 2
-  add(2, 3, 3); add(3, 2, 3); // 2 <-> 3
+  add(2, 0, 3); add(0, 2, 3); // 2 <-> 0
   g.build_csr();
   return g;
 }
 
 TEST(CchCustomizer, DeEdgeHasBanPlEdgeDoesNot) {
-  auto g = two_country_line();
+  auto g = two_country_triangle();
   auto order = BuildOrder(g);
   auto metric = Customize(g, order, kDefaultReferenceWeek);
   ASSERT_EQ(metric.profiles.size(), order.num_base_edges + order.shortcuts.size());
@@ -40,7 +41,7 @@ TEST(CchCustomizer, DeEdgeHasBanPlEdgeDoesNot) {
 }
 
 TEST(CchCustomizer, ShortcutProfileMatchesComposition) {
-  auto g = two_country_line();
+  auto g = two_country_triangle();
   auto order = BuildOrder(g);
   auto metric = Customize(g, order, kDefaultReferenceWeek);
   ASSERT_GT(order.shortcuts.size(), 0u)

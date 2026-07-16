@@ -34,7 +34,8 @@ public:
   void build_adjacency(const CchGraph& g);
 };
 
-CchOrder BuildOrder(const CchGraph& g);
+// concurrency == 0 → std::thread::hardware_concurrency() (at least 1).
+CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency = 0);
 
 } // namespace cch
 } // namespace thor

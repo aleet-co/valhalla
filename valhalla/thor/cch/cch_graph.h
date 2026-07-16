@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <boost/property_tree/ptree_fwd.hpp>
 #include <valhalla/baldr/graphreader.h>
 
 namespace valhalla {
@@ -51,6 +52,13 @@ private:
   std::unordered_map<uint64_t, uint32_t> id_to_index_;
 };
 
+// Parallel build: one GraphReader per worker thread. concurrency == 0 → hardware_concurrency.
+CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
+                         const std::set<uint32_t>& levels = {0, 1, 2},
+                         uint8_t max_roadclass = 7,
+                         uint32_t concurrency = 0);
+
+// Single-reader path (runtime customize / tests). Always single-threaded.
 CchGraph BuildTruckGraph(baldr::GraphReader& reader,
                          const std::set<uint32_t>& levels = {0, 1, 2},
                          uint8_t max_roadclass = 7);
