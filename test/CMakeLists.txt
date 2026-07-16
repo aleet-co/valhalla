@@ -94,7 +94,7 @@ set(tests aabb2 access_restriction actor admin attributes_controller configurati
   transitstop turn turnlanes util_midgard util_skadi vector2 verbal_text_formatter verbal_text_formatter_us
   verbal_text_formatter_us_co verbal_text_formatter_us_tx viterbi_search compression traffictile
   incident_loading worker_nullptr_tiles curl_tilegetter filesystem_utils narrativebuilder util_odin
-  truck_ban_rules cch_profile)
+  truck_ban_rules cch_profile cch_order)
 
 if(ENABLE_DATA_TOOLS)
   list(APPEND tests astar multimodal_astar complexrestriction countryaccess graphbuilder graphparser
