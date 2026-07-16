@@ -35,6 +35,21 @@ thor_worker_t::get_matrix_algorithm(Api& request, const bool has_time, const std
     return &time_distance_bss_matrix_;
   }
 
+  // Explicit per-request CCH selection (truck-ban, source-side date_time only).
+  if (request.options().matrix_algorithm() == Options::matrix_cch) {
+    const bool truck = (costing == "truck" || costing == "truck_ban");
+    const bool has_depart_time =
+        has_time && request.options().date_time_type() != Options::arrive_by;
+    if (truck && has_depart_time && cch_matrix_.prepare(*reader)) {
+      return &cch_matrix_;
+    }
+    add_warning(request, 304);
+    return &time_distance_matrix_;
+  }
+  if (request.options().matrix_algorithm() == Options::matrix_timedistancematrix) {
+    return &time_distance_matrix_;
+  }
+
   Matrix::Algorithm config_algo = Matrix::CostMatrix;
   switch (source_to_target_algorithm) {
     case SELECT_OPTIMAL:
@@ -102,6 +117,7 @@ std::string thor_worker_t::matrix(Api& request) {
            &costmatrix_,
            &time_distance_matrix_,
            &time_distance_bss_matrix_,
+           &cch_matrix_,
        }) {
     alg->set_interrupt(interrupt);
     alg->set_has_time(has_time);

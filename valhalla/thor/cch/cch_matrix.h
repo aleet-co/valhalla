@@ -35,6 +35,12 @@ public:
     return ready_;
   }
 
+  // Eagerly customize (if needed) so availability is known at selection time.
+  // Wraps the private ensure_customized so the worker can prepare before dispatch.
+  bool prepare(baldr::GraphReader& r) {
+    return ensure_customized(r);
+  }
+
 private:
   bool ensure_customized(baldr::GraphReader& reader);
 

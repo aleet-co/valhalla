@@ -12,6 +12,7 @@
 #include <valhalla/thor/bidirectional_astar.h>
 #include <valhalla/thor/centroid.h>
 #include <valhalla/thor/costmatrix.h>
+#include "thor/cch/cch_matrix.h"
 #include <valhalla/thor/isochrone.h>
 #include <valhalla/thor/multimodal_astar.h>
 #include <valhalla/thor/multimodal_transit.h>
@@ -121,6 +122,7 @@ protected:
   CostMatrix costmatrix_;
   TimeDistanceMatrix time_distance_matrix_;
   TimeDistanceBSSMatrix time_distance_bss_matrix_;
+  CCHMatrix cch_matrix_;
 
   Isochrone isochrone_gen;
   std::shared_ptr<meili::MapMatcher> matcher;
