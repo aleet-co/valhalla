@@ -1010,6 +1010,18 @@ void from_json(rapidjson::Document& doc, Options::Action action, Api& api) {
   options.set_prioritize_bidirectional(
       rapidjson::get<bool>(doc, "/prioritize_bidirectional", options.prioritize_bidirectional()));
 
+  // Per-request matrix algorithm selection (default = server chooses).
+  {
+    const auto ma = rapidjson::get<std::string>(doc, "/matrix_algorithm", "");
+    if (ma == "cch") {
+      options.set_matrix_algorithm(Options::matrix_cch);
+    } else if (ma == "timedistancematrix") {
+      options.set_matrix_algorithm(Options::matrix_timedistancematrix);
+    } else {
+      options.set_matrix_algorithm(Options::matrix_default);
+    }
+  }
+
   // Throw an error if use_timestamps is set to true but there are no timestamps in the
   // trace (or no durations present)
   if (options.use_timestamps()) {
