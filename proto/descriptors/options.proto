@@ -421,6 +421,12 @@ message Options {
     invariant = 4;
   }
 
+  enum MatrixAlgorithm {
+    matrix_default = 0;             // let the server choose (current behavior)
+    matrix_timedistancematrix = 1;  // force TimeDistanceMatrix (baseline)
+    matrix_cch = 2;                 // request the bans-only CCH matrix
+  }
+
   enum ExpansionProperties {
     cost = 0;
     duration = 1;
@@ -546,4 +552,5 @@ message Options {
   TileOptions tile_options = 64;                                   // additional /tile specific options
   repeated Levels exclude_levels = 65;                             // Levels to exclude within the exclude_polygon at the same index
   uint32 expansion_max_distance = 66;                              // Maximum path distance in meters for expansion. 0 = disabled.
+  MatrixAlgorithm matrix_algorithm = 67;                           // per-request matrix algorithm selection
 }
