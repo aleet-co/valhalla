@@ -41,6 +41,9 @@ private:
   std::string artifact_path_;
   uint32_t hops_;
   bool ready_ = false;
+  // Negative-cache latch: once we've tried (and failed) to customize, don't
+  // re-probe/re-build the truck graph on every subsequent request.
+  bool customize_attempted_ = false;
   cch::CchGraph graph_;
   cch::CchOrder order_;
   cch::CustomizedMetric metric_;
