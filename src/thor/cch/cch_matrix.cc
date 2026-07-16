@@ -293,6 +293,32 @@ bool CCHMatrix::SourceToTarget(Api& request,
     depart_sow[s] = cch::utc_second_of_week(epoch);
   }
 
+  // Downward trees are SOURCE-INDEPENDENT: a target's down-tree (and the base
+  // nodes its shortcuts unpack to) depend only on the target and the static
+  // metric, never on the source. Compute each ONCE here instead of rebuilding
+  // it for every source inside the loop below -- the previous code ran a full
+  // DownwardTree (plus its unpack) for every (source, target) pair, i.e. S*T
+  // builds for an S*T matrix. Hoisting to T builds is a pure amortization: the
+  // per-pair meeting-min in the source loop is unchanged, so the output matrix
+  // is byte-for-byte identical. dn_nodes_all[t] holds the target's unpacked
+  // down-side base nodes (also source-invariant), merged into each source's
+  // corridor only when that target is actually reachable.
+  std::vector<std::unordered_map<uint32_t, float>> dn_dist_all(tgts.size());
+  std::vector<std::unordered_set<uint32_t>> dn_nodes_all(tgts.size());
+  for (int t = 0; t < tgts.size(); ++t) {
+    if (tgt_idx[t] < 0)
+      continue;
+    std::unordered_map<uint32_t, uint32_t> dn_parent;
+    DownwardTree(order_, metric_, static_cast<uint32_t>(tgt_idx[t]), dn_dist_all[t], dn_parent,
+                 interrupt_);
+    auto& nodes = dn_nodes_all[t];
+    for (const auto& kv : dn_dist_all[t]) {
+      auto pit = dn_parent.find(kv.first);
+      if (pit != dn_parent.end())
+        UnpackBaseNodes(order_, graph_, pit->second, nodes);
+    }
+  }
+
   for (int s = 0; s < srcs.size(); ++s) {
     if (src_idx[s] < 0) {
       // Unsnapped source: no target is reachable from this row. Still write the
@@ -336,10 +362,7 @@ bool CCHMatrix::SourceToTarget(Api& request,
     for (int t = 0; t < tgts.size(); ++t) {
       if (tgt_idx[t] < 0)
         continue;
-      std::unordered_map<uint32_t, float> dn_dist;
-      std::unordered_map<uint32_t, uint32_t> dn_parent;
-      DownwardTree(order_, metric_, static_cast<uint32_t>(tgt_idx[t]), dn_dist, dn_parent,
-                   interrupt_);
+      const auto& dn_dist = dn_dist_all[t];
       // Meeting node = argmin over up_dist ∩ dn_dist.
       float best = kInf;
       for (const auto& [node, du] : up_dist) {
@@ -351,15 +374,10 @@ bool CCHMatrix::SourceToTarget(Api& request,
         continue; // target not connected in the up/down DAG
       corridor.insert(static_cast<uint32_t>(tgt_idx[t]));
       reachable_targets.push_back(static_cast<uint32_t>(tgt_idx[t]));
-      // Unpack the dn-side shortcuts spanned by this target's down-tree into the
-      // corridor (target-dependent, so it stays inside the loop). This
-      // over-includes (safe) rather than tracing only the meeting path; the
+      // Merge this target's precomputed down-side base nodes into the corridor.
+      // This over-includes (safe) rather than tracing only the meeting path; the
       // hop-ball below is what actually admits ban detours.
-      for (const auto& kv : dn_dist) {
-        auto pit = dn_parent.find(kv.first);
-        if (pit != dn_parent.end())
-          UnpackBaseNodes(order_, graph_, pit->second, corridor);
-      }
+      corridor.insert(dn_nodes_all[t].begin(), dn_nodes_all[t].end());
     }
 
     ExpandCorridorHops(graph_, corridor, hops_);
