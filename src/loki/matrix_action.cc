@@ -95,15 +95,22 @@ void loki_worker_t::matrix(Api& request) {
   };
 
   // check that location size does not exceed max.
-  auto max = max_matrix_locations.find(costing_name)->second;
+  // Avoid find()->second UB if service_limits.<costing> is missing (e.g. truck_ban
+  // present in the binary but absent from the running config) — that used to
+  // segfault valhalla_service on the first matrix request.
+  auto max_loc_it = max_matrix_locations.find(costing_name);
+  auto max_dist_it = max_matrix_distance.find(costing_name);
+  if (max_loc_it == max_matrix_locations.end() || max_dist_it == max_matrix_distance.end()) {
+    throw valhalla_exception_t{150, "missing service_limits for costing " + costing_name};
+  }
+  auto max = max_loc_it->second;
   if (options.sources_size() * options.targets_size() > max) {
     throw valhalla_exception_t{150, std::to_string(max)};
   };
 
   // check the distances
   auto max_location_distance = std::numeric_limits<float>::min();
-  check_distance(request, max_matrix_distance.find(costing_name)->second, max_location_distance,
-                 max_timedep_dist_matrix);
+  check_distance(request, max_dist_it->second, max_location_distance, max_timedep_dist_matrix);
 
   // check distance for hierarchy pruning
   check_hierarchy_distance(request);

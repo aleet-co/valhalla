@@ -133,10 +133,15 @@ std::string thor_worker_t::matrix(Api& request) {
   }
   LOG_INFO("matrix::" + std::string(algo->name()));
 
+  auto max_dist_it = max_matrix_distance.find(costing);
+  if (max_dist_it == max_matrix_distance.end()) {
+    throw valhalla_exception_t{154, "missing service_limits.max_matrix_distance for " + costing};
+  }
+  const float matrix_max_distance = max_dist_it->second;
+
   // TODO(nils): TDMatrix doesn't care about either destonly or no_thru
   if (algo->name() != "costmatrix") {
-    algo->SourceToTarget(request, *reader, mode_costing, mode,
-                         max_matrix_distance.find(costing)->second);
+    algo->SourceToTarget(request, *reader, mode_costing, mode, matrix_max_distance);
     return tyr::serializeMatrix(request);
   }
 
@@ -150,8 +155,7 @@ std::string thor_worker_t::matrix(Api& request) {
   cost->set_allow_destination_only(false);
   cost->set_pass(0);
 
-  if (!algo->SourceToTarget(request, *reader, mode_costing, mode,
-                            max_matrix_distance.find(costing)->second) &&
+  if (!algo->SourceToTarget(request, *reader, mode_costing, mode, matrix_max_distance) &&
       cost->AllowMultiPass() && costmatrix_allow_second_pass) {
     // NOTE: we only look for unfound connections in a second pass; but
     // if A -> B wasn't found and B -> A was, we still expand both for bidirectional efficiency
@@ -162,8 +166,7 @@ std::string thor_worker_t::matrix(Api& request) {
     cost->set_allow_destination_only(true);
     cost->set_allow_conditional_destination(true);
     algo->set_not_thru_pruning(false);
-    algo->SourceToTarget(request, *reader, mode_costing, mode,
-                         max_matrix_distance.find(costing)->second);
+    algo->SourceToTarget(request, *reader, mode_costing, mode, matrix_max_distance);
 
     // add a warning that we needed to open destonly etc
     add_warning(request, 400, get_unfound_indices(request.matrix().second_pass()));
