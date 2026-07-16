@@ -254,6 +254,10 @@ config = {
                 "expand_within_distance": {"0": 1e8, "1": 100000, "2": 5000},
             }
         },
+        "cch": {
+            "artifact": "/custom_files/cch_truck.bin",
+            "corridor_hops": 16,
+        },
     },
     "odin": {
         "service": {"proxy": "ipc:///tmp/odin"},
