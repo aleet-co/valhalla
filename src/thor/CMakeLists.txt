@@ -4,6 +4,7 @@ set(sources
   alternates.cc
   bidirectional_astar.cc
   cch/cch_graph.cc
+  cch/cch_matrix.cc
   cch/customizer.cc
   cch/order.cc
   cch/profile.cc
