@@ -425,6 +425,7 @@ message Options {
     matrix_default = 0;             // let the server choose (current behavior)
     matrix_timedistancematrix = 1;  // force TimeDistanceMatrix (baseline)
     matrix_cch = 2;                 // request the bans-only CCH matrix
+    matrix_costmatrix = 3;          // force static CostMatrix (no date_time)
   }
 
   enum ExpansionProperties {

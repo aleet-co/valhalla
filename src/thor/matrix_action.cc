@@ -49,6 +49,9 @@ thor_worker_t::get_matrix_algorithm(Api& request, const bool has_time, const std
   if (request.options().matrix_algorithm() == Options::matrix_timedistancematrix) {
     return &time_distance_matrix_;
   }
+  if (request.options().matrix_algorithm() == Options::matrix_costmatrix) {
+    return &costmatrix_;
+  }
 
   Matrix::Algorithm config_algo = Matrix::CostMatrix;
   switch (source_to_target_algorithm) {

@@ -1017,6 +1017,8 @@ void from_json(rapidjson::Document& doc, Options::Action action, Api& api) {
       options.set_matrix_algorithm(Options::matrix_cch);
     } else if (ma == "timedistancematrix") {
       options.set_matrix_algorithm(Options::matrix_timedistancematrix);
+    } else if (ma == "costmatrix") {
+      options.set_matrix_algorithm(Options::matrix_costmatrix);
     } else {
       options.set_matrix_algorithm(Options::matrix_default);
     }
