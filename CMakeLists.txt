@@ -293,7 +293,8 @@ endif()
 
 ## Valhalla programs
 set(valhalla_programs
-    valhalla_export_edges valhalla_export_ban_graph valhalla_expand_bounding_box valhalla_service)
+    valhalla_export_edges valhalla_export_ban_graph valhalla_build_cch
+    valhalla_expand_bounding_box valhalla_service)
 
 ## Valhalla data tools
 set(valhalla_data_tools valhalla_build_statistics valhalla_ways_to_edges valhalla_validate_transit
