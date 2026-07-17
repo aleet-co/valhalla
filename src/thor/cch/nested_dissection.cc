@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <queue>
 #include <thread>
 #include <utility>
@@ -406,38 +408,113 @@ struct NdState {
   std::vector<double> angles;
   std::atomic<uint32_t>* free_threads = nullptr;
   std::atomic<uint64_t>* bipartitions = nullptr;
+  std::atomic<uint64_t>* nodes_ordered = nullptr;
+  std::atomic<uint32_t>* max_depth = nullptr;
+  std::atomic<uint32_t>* last_sep = nullptr;
+  std::atomic<uint32_t>* last_side_a = nullptr;
+  std::atomic<uint32_t>* last_side_b = nullptr;
+  uint32_t total_nodes = 0;
+  std::chrono::steady_clock::time_point t0{};
+  std::mutex* log_mu = nullptr;
+  std::chrono::steady_clock::time_point* last_log = nullptr;
 };
 
-std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes);
+void maybe_log_nd_progress(NdState& st,
+                           uint32_t depth,
+                           uint32_t fragment_n,
+                           bool force = false) {
+  using clock = std::chrono::steady_clock;
+  const auto now = clock::now();
+  std::lock_guard<std::mutex> lock(*st.log_mu);
+  const double since_log = std::chrono::duration<double>(now - *st.last_log).count();
+  const uint64_t ordered = st.nodes_ordered->load(std::memory_order_relaxed);
+  const bool done = ordered >= st.total_nodes;
+  if (!force && !done && since_log < 15.0)
+    return;
+  *st.last_log = now;
 
-std::vector<uint32_t> nd_on_connected(NdState& st, const std::vector<uint32_t>& nodes) {
+  const double elapsed = std::chrono::duration<double>(now - st.t0).count();
+  const double pct = st.total_nodes ? 100.0 * ordered / st.total_nodes : 100.0;
+  const double rate = elapsed > 0.0 ? ordered / elapsed : 0.0;
+  const double eta_s =
+      rate > 0.0 ? (static_cast<double>(st.total_nodes - ordered) / rate) : 0.0;
+  LOG_INFO("cch nd: progress ordered " + std::to_string(ordered) + "/" +
+           std::to_string(st.total_nodes) + " (" + std::to_string(static_cast<int>(pct)) +
+           "%)  bipartitions=" +
+           std::to_string(st.bipartitions->load(std::memory_order_relaxed)) +
+           "  depth=" + std::to_string(depth) +
+           "  max_depth=" +
+           std::to_string(st.max_depth->load(std::memory_order_relaxed)) +
+           "  fragment_n=" + std::to_string(fragment_n) + "  last_cut sep=" +
+           std::to_string(st.last_sep->load(std::memory_order_relaxed)) +
+           " sides=" + std::to_string(st.last_side_a->load(std::memory_order_relaxed)) +
+           "+" + std::to_string(st.last_side_b->load(std::memory_order_relaxed)) +
+           "  rate_nodes_per_s=" + std::to_string(rate) +
+           "  elapsed_s=" + std::to_string(elapsed) + "  eta_s≈" + std::to_string(eta_s));
+}
+
+void note_depth(NdState& st, uint32_t depth) {
+  uint32_t cur = st.max_depth->load(std::memory_order_relaxed);
+  while (depth > cur &&
+         !st.max_depth->compare_exchange_weak(cur, depth, std::memory_order_relaxed)) {
+  }
+}
+
+std::vector<uint32_t> finish_leaf(NdState& st,
+                                  const Fragment& f,
+                                  uint32_t depth) {
+  auto out = order_by_degree(f);
+  st.nodes_ordered->fetch_add(out.size(), std::memory_order_relaxed);
+  maybe_log_nd_progress(st, depth, static_cast<uint32_t>(f.nodes.size()));
+  return out;
+}
+
+std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes, uint32_t depth);
+
+std::vector<uint32_t> nd_on_connected(NdState& st,
+                                      const std::vector<uint32_t>& nodes,
+                                      uint32_t depth) {
+  note_depth(st, depth);
   Fragment f = make_fragment(*st.ug, nodes);
   if (f.nodes.size() <= kLeafSize)
-    return order_by_degree(f);
+    return finish_leaf(st, f, depth);
+
+  // Large fragments can sit in max-flow for a long time — force a heartbeat.
+  constexpr uint32_t kForceLogFragment = 100000;
+  maybe_log_nd_progress(st, depth, static_cast<uint32_t>(f.nodes.size()),
+                        f.nodes.size() >= kForceLogFragment);
 
   Partition part = partition_inertial_flow(f, *st.g, st.angles);
   if (!part.ok)
     part = partition_geometric(f, *st.g);
   if (!part.ok)
-    return order_by_degree(f);
+    return finish_leaf(st, f, depth);
 
   st.bipartitions->fetch_add(1, std::memory_order_relaxed);
+  st.last_sep->store(static_cast<uint32_t>(part.separator.size()), std::memory_order_relaxed);
+  st.last_side_a->store(static_cast<uint32_t>(part.side_a.size()), std::memory_order_relaxed);
+  st.last_side_b->store(static_cast<uint32_t>(part.side_b.size()), std::memory_order_relaxed);
+  maybe_log_nd_progress(st, depth, static_cast<uint32_t>(f.nodes.size()),
+                        f.nodes.size() >= kForceLogFragment);
 
   std::vector<uint32_t> left, right;
   uint32_t available = st.free_threads->load(std::memory_order_relaxed);
   if (available > 0 && part.side_a.size() > kLeafSize && part.side_b.size() > kLeafSize) {
     st.free_threads->fetch_sub(1, std::memory_order_relaxed);
-    std::thread th([&]() { right = nd_recurse(st, part.side_b); });
-    left = nd_recurse(st, part.side_a);
+    std::thread th([&]() { right = nd_recurse(st, part.side_b, depth + 1); });
+    left = nd_recurse(st, part.side_a, depth + 1);
     th.join();
     st.free_threads->fetch_add(1, std::memory_order_relaxed);
   } else {
-    left = nd_recurse(st, part.side_a);
-    right = nd_recurse(st, part.side_b);
+    left = nd_recurse(st, part.side_a, depth + 1);
+    right = nd_recurse(st, part.side_b, depth + 1);
   }
 
-  // Separator last (highest ranks). Stable order by node id.
+  // Separator nodes are finalized here (highest ranks among this fragment).
   std::sort(part.separator.begin(), part.separator.end());
+  st.nodes_ordered->fetch_add(part.separator.size(), std::memory_order_relaxed);
+  maybe_log_nd_progress(st, depth, static_cast<uint32_t>(f.nodes.size()));
+
   std::vector<uint32_t> out;
   out.reserve(nodes.size());
   out.insert(out.end(), left.begin(), left.end());
@@ -446,12 +523,13 @@ std::vector<uint32_t> nd_on_connected(NdState& st, const std::vector<uint32_t>& 
   return out;
 }
 
-std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes) {
+std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes, uint32_t depth) {
   if (nodes.empty())
     return {};
+  note_depth(st, depth);
   if (nodes.size() <= kLeafSize) {
     Fragment f = make_fragment(*st.ug, nodes);
-    return order_by_degree(f);
+    return finish_leaf(st, f, depth);
   }
 
   Fragment f = make_fragment(*st.ug, nodes);
@@ -460,29 +538,39 @@ std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes
     std::vector<uint32_t> out;
     out.reserve(nodes.size());
     for (const auto& c : comps) {
-      auto part = nd_recurse(st, c);
+      auto part = nd_recurse(st, c, depth + 1);
       out.insert(out.end(), part.begin(), part.end());
     }
     return out;
   }
-  return nd_on_connected(st, nodes);
+  return nd_on_connected(st, nodes, depth);
 }
 
 } // namespace
 
 std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g, uint32_t concurrency) {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
   const uint32_t threads = resolve_concurrency(concurrency);
   const uint32_t n = static_cast<uint32_t>(g.nodes.size());
   LOG_INFO("cch nd: building undirected graph  nodes=" + std::to_string(n) +
            " threads=" + std::to_string(threads));
 
   UndirectedGraph ug = build_undirected(g);
-  LOG_INFO("cch nd: undirected edges=" + std::to_string(ug.head.size() / 2));
+  LOG_INFO("cch nd: undirected edges=" + std::to_string(ug.head.size() / 2) +
+           "  — recursive bipartition starting");
 
   constexpr double kPi = 3.14159265358979323846;
   std::vector<double> angles = {0.0, kPi / 4.0, kPi / 2.0, 3.0 * kPi / 4.0};
   std::atomic<uint32_t> free_threads{threads > 1 ? threads - 1 : 0};
   std::atomic<uint64_t> bipartitions{0};
+  std::atomic<uint64_t> nodes_ordered{0};
+  std::atomic<uint32_t> max_depth{0};
+  std::atomic<uint32_t> last_sep{0};
+  std::atomic<uint32_t> last_side_a{0};
+  std::atomic<uint32_t> last_side_b{0};
+  std::mutex log_mu;
+  auto last_log = t0;
 
   NdState st;
   st.ug = &ug;
@@ -490,12 +578,21 @@ std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g, uint32_t c
   st.angles = angles;
   st.free_threads = &free_threads;
   st.bipartitions = &bipartitions;
+  st.nodes_ordered = &nodes_ordered;
+  st.max_depth = &max_depth;
+  st.last_sep = &last_sep;
+  st.last_side_a = &last_side_a;
+  st.last_side_b = &last_side_b;
+  st.total_nodes = n;
+  st.t0 = t0;
+  st.log_mu = &log_mu;
+  st.last_log = &last_log;
 
   std::vector<uint32_t> all(n);
   for (uint32_t i = 0; i < n; ++i)
     all[i] = i;
 
-  auto order_list = nd_recurse(st, all);
+  auto order_list = nd_recurse(st, all, 0);
   if (order_list.size() != n) {
     LOG_WARN("cch nd: order size mismatch (" + std::to_string(order_list.size()) + " vs " +
              std::to_string(n) + "); falling back to degree order");
@@ -522,8 +619,10 @@ std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g, uint32_t c
     rank[v] = i;
   }
 
+  const double total_s = std::chrono::duration<double>(clock::now() - t0).count();
   LOG_INFO("cch nd: done  bipartitions=" + std::to_string(bipartitions.load()) +
-           " nodes=" + std::to_string(n));
+           "  max_depth=" + std::to_string(max_depth.load()) +
+           "  nodes=" + std::to_string(n) + "  elapsed_s=" + std::to_string(total_s));
   return rank;
 }
 
