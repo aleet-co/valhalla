@@ -6,6 +6,7 @@ set(sources
   cch/cch_graph.cc
   cch/cch_matrix.cc
   cch/customizer.cc
+  cch/nested_dissection.cc
   cch/order.cc
   cch/profile.cc
   costmatrix.cc

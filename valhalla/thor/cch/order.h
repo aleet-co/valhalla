@@ -20,6 +20,11 @@ struct CchShortcut {
   uint32_t right = 0; // child edge id
 };
 
+enum class OrderMethod {
+  NestedDissection = 0, // default: inertial-flow ND + contract in order
+  IndependentSet = 1,   // legacy parallel local-minima contraction
+};
+
 class CchOrder {
 public:
   uint32_t num_base_edges = 0;
@@ -35,7 +40,9 @@ public:
 };
 
 // concurrency == 0 → std::thread::hardware_concurrency() (at least 1).
-CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency = 0);
+CchOrder BuildOrder(const CchGraph& g,
+                    uint32_t concurrency = 0,
+                    OrderMethod method = OrderMethod::NestedDissection);
 
 } // namespace cch
 } // namespace thor

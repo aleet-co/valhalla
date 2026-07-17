@@ -9,29 +9,47 @@ using namespace valhalla::thor::cch;
 
 namespace {
 
-// Bidirectional triangle: independent-set / low-degree contraction of any
-// vertex creates shortcuts between the remaining pair (unlike a plain line,
-// where endpoint-first contraction yields no fill-in).
-CchGraph two_country_triangle() {
+// Bidirectional 4-cycle. Contracting any vertex creates a chord shortcut
+// between its two neighbors (no base chord exists).
+CchGraph two_country_cycle() {
   CchGraph g;
-  auto node = [&](uint64_t id, const char* iso) {
-    CchNode n; n.graph_id = id; n.country = iso; n.tz_index = 0; g.set_index(id, g.nodes.size());
+  auto node = [&](uint64_t id, const char* iso, double lon, double lat) {
+    CchNode n;
+    n.graph_id = id;
+    n.country = iso;
+    n.tz_index = 0;
+    n.lat = lat;
+    n.lon = lon;
+    g.set_index(id, g.nodes.size());
     g.nodes.push_back(n);
   };
-  node(0, "PL"); node(1, "DE"); node(2, "PL");
+  node(0, "PL", 0.0, 0.0);
+  node(1, "DE", 1.0, 0.0);
+  node(2, "PL", 1.0, 1.0);
+  node(3, "DE", 0.0, 1.0);
   auto add = [&](uint32_t u, uint32_t v, uint8_t rc) {
-    CchBaseEdge e; e.u = u; e.v = v; e.time_s = 600; e.roadclass = rc; g.edges.push_back(e);
+    CchBaseEdge e;
+    e.u = u;
+    e.v = v;
+    e.time_s = 600;
+    e.roadclass = rc;
+    g.edges.push_back(e);
   };
-  // edge 0 enters DE on a secondary road -> subject to Sunday ban; edge 1 enters PL -> never banned.
-  add(0, 1, 3); add(1, 0, 3); // 0 <-> 1 (DE / PL)
-  add(1, 2, 3); add(2, 1, 3); // 1 <-> 2
-  add(2, 0, 3); add(0, 2, 3); // 2 <-> 0
+  // 0->1 enters DE (Sunday ban); 1->2 enters PL (never banned).
+  add(0, 1, 3);
+  add(1, 0, 3);
+  add(1, 2, 3);
+  add(2, 1, 3);
+  add(2, 3, 3);
+  add(3, 2, 3);
+  add(3, 0, 3);
+  add(0, 3, 3);
   g.build_csr();
   return g;
 }
 
 TEST(CchCustomizer, DeEdgeHasBanPlEdgeDoesNot) {
-  auto g = two_country_triangle();
+  auto g = two_country_cycle();
   auto order = BuildOrder(g);
   auto metric = Customize(g, order, kDefaultReferenceWeek);
   ASSERT_EQ(metric.profiles.size(), order.num_base_edges + order.shortcuts.size());
@@ -41,7 +59,7 @@ TEST(CchCustomizer, DeEdgeHasBanPlEdgeDoesNot) {
 }
 
 TEST(CchCustomizer, ShortcutProfileMatchesComposition) {
-  auto g = two_country_triangle();
+  auto g = two_country_cycle();
   auto order = BuildOrder(g);
   auto metric = Customize(g, order, kDefaultReferenceWeek);
   ASSERT_GT(order.shortcuts.size(), 0u)

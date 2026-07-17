@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include <string>
@@ -20,7 +21,7 @@ using namespace valhalla;
 
 // Offline builder for the bans-only CCH matrix artifact. Reads Valhalla tiles,
 // builds the truck subgraph, computes a metric-independent contraction order
-// via parallel independent-set contraction, and writes the CCH artifact.
+// (nested dissection by default), and writes the CCH artifact.
 
 namespace {
 
@@ -44,12 +45,21 @@ uint32_t resolve_concurrency(uint32_t concurrency) {
   return concurrency;
 }
 
+thor::cch::OrderMethod parse_order_method(const std::string& s) {
+  if (s == "nested" || s == "nd" || s == "nested-dissection")
+    return thor::cch::OrderMethod::NestedDissection;
+  if (s == "independent-set" || s == "is")
+    return thor::cch::OrderMethod::IndependentSet;
+  throw std::runtime_error("unknown --order '" + s +
+                           "' (expected nested|independent-set)");
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
   const auto program = std::filesystem::path(__FILE__).stem().string();
   boost::property_tree::ptree config;
-  std::string output_path, levels_str;
+  std::string output_path, levels_str, order_str;
   uint32_t max_class = 7;
   uint32_t concurrency = 0;
 
@@ -66,7 +76,8 @@ int main(int argc, char* argv[]) {
       ("o,output", "Path to write the CCH artifact.", cxxopts::value<std::string>(output_path)->default_value("/custom_files/cch_truck.bin"))
       ("levels", "Comma-separated hierarchy levels to include (0=highway,1=arterial,2=local).", cxxopts::value<std::string>(levels_str)->default_value("0,1,2"))
       ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("7"))
-      ("j,concurrency", "Worker threads for subgraph load + contraction (0=hardware_concurrency).", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
+      ("order", "Contraction order: nested (inertial-flow ND, default) or independent-set.", cxxopts::value<std::string>(order_str)->default_value("nested"))
+      ("j,concurrency", "Worker threads for subgraph load + ND (0=hardware_concurrency).", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
     // clang-format on
 
     auto result = options.parse(argc, argv);
@@ -81,6 +92,13 @@ int main(int argc, char* argv[]) {
   const std::set<uint32_t> levels = parse_levels(levels_str);
   const auto max_roadclass = static_cast<uint8_t>(max_class);
   concurrency = resolve_concurrency(concurrency);
+  thor::cch::OrderMethod order_method;
+  try {
+    order_method = parse_order_method(order_str);
+  } catch (const std::exception& e) {
+    std::cerr << e.what() << std::endl;
+    return EXIT_FAILURE;
+  }
 
   using clock = std::chrono::steady_clock;
   const auto t_all = clock::now();
@@ -90,6 +108,7 @@ int main(int argc, char* argv[]) {
 
   LOG_INFO("valhalla_build_cch: levels=" + levels_str +
            " max_class=" + std::to_string(max_class) +
+           " order=" + order_str +
            " concurrency=" + std::to_string(concurrency) +
            " output=" + output_path);
 
@@ -101,9 +120,9 @@ int main(int argc, char* argv[]) {
            " edges=" + std::to_string(graph.edges.size()) +
            " phase_s=" + std::to_string(secs(t1)));
 
-  LOG_INFO("valhalla_build_cch: phase 2/3 Contracting (parallel independent-set)...");
+  LOG_INFO("valhalla_build_cch: phase 2/3 Ordering + contracting...");
   const auto t2 = clock::now();
-  auto order = thor::cch::BuildOrder(graph, concurrency);
+  auto order = thor::cch::BuildOrder(graph, concurrency, order_method);
   LOG_INFO("valhalla_build_cch: phase 2/3 done  shortcuts=" +
            std::to_string(order.shortcuts.size()) + " phase_s=" + std::to_string(secs(t2)));
 

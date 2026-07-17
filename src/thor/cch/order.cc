@@ -1,6 +1,7 @@
 #include "thor/cch/order.h"
 
 #include "midgard/logging.h"
+#include "thor/cch/nested_dissection.h"
 
 #include <algorithm>
 #include <atomic>
@@ -81,9 +82,122 @@ void merge_edge(std::unordered_map<uint32_t, DynEdge>& adj, uint32_t key, DynEdg
     adj[key] = e;
 }
 
-} // namespace
+bool maybe_add_shortcut(CchOrder& order,
+                        std::vector<std::unordered_map<uint32_t, DynEdge>>& out,
+                        std::vector<std::unordered_map<uint32_t, DynEdge>>& inc,
+                        const Proposed& best) {
+  auto existing = out[best.sc.u].find(best.sc.w);
+  if (existing != out[best.sc.u].end() && existing->second.hops <= best.hops)
+    return false;
+  const uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
+  order.shortcuts.push_back(best.sc);
+  merge_edge(out[best.sc.u], best.sc.w, DynEdge{sc_id, best.hops});
+  merge_edge(inc[best.sc.w], best.sc.u, DynEdge{sc_id, best.hops});
+  return true;
+}
 
-CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
+void remove_node(uint32_t v,
+                 std::vector<std::unordered_map<uint32_t, DynEdge>>& out,
+                 std::vector<std::unordered_map<uint32_t, DynEdge>>& inc,
+                 std::vector<uint8_t>& active) {
+  for (const auto& [w, _] : out[v]) {
+    if (active[w])
+      inc[w].erase(v);
+  }
+  for (const auto& [u, _] : inc[v]) {
+    if (active[u])
+      out[u].erase(v);
+  }
+  out[v].clear();
+  inc[v].clear();
+  active[v] = 0;
+}
+
+// Contract nodes in increasing rank order (low rank first).
+CchOrder ContractInOrder(const CchGraph& g, const std::vector<uint32_t>& rank) {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  auto elapsed_s = [&]() {
+    return std::chrono::duration<double>(clock::now() - t0).count();
+  };
+
+  const uint32_t n = static_cast<uint32_t>(g.nodes.size());
+  CchOrder order;
+  order.num_base_edges = static_cast<uint32_t>(g.edges.size());
+  order.rank = rank;
+  order.tile_build_hash = g.tile_build_hash;
+
+  std::vector<uint32_t> by_rank(n);
+  for (uint32_t v = 0; v < n; ++v) {
+    if (rank[v] >= n)
+      throw std::runtime_error("cch: invalid rank in ContractInOrder");
+    by_rank[rank[v]] = v;
+  }
+
+  std::vector<std::unordered_map<uint32_t, DynEdge>> out(n), inc(n);
+  for (uint32_t ei = 0; ei < g.edges.size(); ++ei) {
+    const auto& e = g.edges[ei];
+    merge_edge(out[e.u], e.v, DynEdge{ei, 1});
+    merge_edge(inc[e.v], e.u, DynEdge{ei, 1});
+  }
+  std::vector<uint8_t> active(n, 1);
+
+  LOG_INFO("cch contract: sequential-by-rank  nodes=" + std::to_string(n) +
+           " base_edges=" + std::to_string(order.num_base_edges));
+
+  auto last_log = clock::now();
+  for (uint32_t ri = 0; ri < n; ++ri) {
+    const uint32_t v = by_rank[ri];
+    if (!active[v])
+      continue;
+
+    // Shortcuts among remaining neighbors for each in×out triangle through v.
+    for (const auto& [u, e_uv] : inc[v]) {
+      if (u == v || !active[u])
+        continue;
+      auto ituv = out[u].find(v);
+      if (ituv == out[u].end())
+        continue;
+      for (const auto& [w, e_vw] : out[v]) {
+        if (w == v || w == u || !active[w])
+          continue;
+        Proposed p;
+        p.sc.u = u;
+        p.sc.w = w;
+        p.sc.middle = v;
+        p.sc.left = ituv->second.edge_id;
+        p.sc.right = e_vw.edge_id;
+        p.hops = ituv->second.hops + e_vw.hops;
+        maybe_add_shortcut(order, out, inc, p);
+      }
+    }
+    remove_node(v, out, inc, active);
+
+    const auto now = clock::now();
+    const uint32_t done = ri + 1;
+    const bool pct_tick =
+        n > 0 && (done == n || (done % std::max<uint32_t>(1, n / 20) == 0));
+    if (done == n || pct_tick ||
+        std::chrono::duration<double>(now - last_log).count() >= 15.0) {
+      const double pct = n ? 100.0 * done / n : 100.0;
+      const double rate = elapsed_s() > 0.0 ? done / elapsed_s() : 0.0;
+      const double eta_s = rate > 0.0 ? (static_cast<double>(n - done) / rate) : 0.0;
+      LOG_INFO("cch contract: contracted " + std::to_string(done) + "/" +
+               std::to_string(n) + " (" + std::to_string(static_cast<int>(pct)) +
+               "%)  shortcuts=" + std::to_string(order.shortcuts.size()) +
+               "  rate_nodes_per_s=" + std::to_string(rate) +
+               "  elapsed_s=" + std::to_string(elapsed_s()) +
+               "  eta_s≈" + std::to_string(eta_s));
+      last_log = now;
+    }
+  }
+
+  LOG_INFO("cch contract: done  shortcuts=" + std::to_string(order.shortcuts.size()) +
+           "  elapsed_s=" + std::to_string(elapsed_s()));
+  return order;
+}
+
+CchOrder BuildOrderIndependentSet(const CchGraph& g, uint32_t concurrency) {
   using clock = std::chrono::steady_clock;
   const auto t0 = clock::now();
   auto elapsed_s = [&]() {
@@ -123,7 +237,6 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
   while (remaining > 0) {
     ++phase;
 
-    // Score active nodes (degree in residual graph).
     parallel_for(threads, n, [&](size_t v) {
       if (!active[v])
         return;
@@ -131,7 +244,6 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
                              static_cast<uint32_t>(v)};
     });
 
-    // Local minima w.r.t. (degree, id) form an independent set.
     parallel_for(threads, n, [&](size_t v) {
       in_is[v] = 0;
       if (!active[v])
@@ -154,7 +266,6 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
         iset.push_back(v);
     }
 
-    // Progress guarantee on pathological plateaus.
     if (iset.empty()) {
       uint32_t best = n;
       for (uint32_t v = 0; v < n; ++v) {
@@ -172,7 +283,6 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
     std::sort(iset.begin(), iset.end(),
               [&](uint32_t a, uint32_t b) { return priority[a] < priority[b]; });
 
-    // Propose shortcuts for each IS node in parallel (read-only residual adj).
     std::vector<std::vector<Proposed>> proposals(iset.size());
     parallel_for(threads, iset.size(), [&](size_t ii) {
       const uint32_t v = iset[ii];
@@ -198,7 +308,6 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
       }
     });
 
-    // Flatten + deterministic merge by (u,w) keeping min hops.
     size_t total_props = 0;
     for (const auto& bucket : proposals)
       total_props += bucket.size();
@@ -222,36 +331,12 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
       size_t j = i + 1;
       while (j < flat.size() && flat[j].sc.u == flat[i].sc.u && flat[j].sc.w == flat[i].sc.w)
         ++j;
-      // flat[i] is best for this (u,w) after sort.
-      const Proposed& best = flat[i];
-      // Chordal completion: only insert when the residual has no u→w yet, or the
-      // new triangle is strictly fewer hops. Re-adding every triangle over an
-      // existing edge balloons memory (Europe hit ~4e9 shortcuts / OOM).
-      auto existing = out[best.sc.u].find(best.sc.w);
-      if (existing != out[best.sc.u].end() && existing->second.hops <= best.hops) {
-        i = j;
-        continue;
-      }
-      const uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
-      order.shortcuts.push_back(best.sc);
-      merge_edge(out[best.sc.u], best.sc.w, DynEdge{sc_id, best.hops});
-      merge_edge(inc[best.sc.w], best.sc.u, DynEdge{sc_id, best.hops});
+      maybe_add_shortcut(order, out, inc, flat[i]);
       i = j;
     }
 
-    // Remove IS nodes from residual graph; assign ranks in priority order.
     for (uint32_t v : iset) {
-      for (const auto& [w, _] : out[v]) {
-        if (active[w])
-          inc[w].erase(v);
-      }
-      for (const auto& [u, _] : inc[v]) {
-        if (active[u])
-          out[u].erase(v);
-      }
-      out[v].clear();
-      inc[v].clear();
-      active[v] = 0;
+      remove_node(v, out, inc, active);
       in_is[v] = 0;
       order.rank[v] = rank_counter++;
     }
@@ -279,9 +364,35 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
     }
   }
 
-  LOG_INFO("cch order: contraction done  phases=" + std::to_string(phase) +
+  LOG_INFO("cch order: independent-set contraction done  phases=" + std::to_string(phase) +
            " shortcuts=" + std::to_string(order.shortcuts.size()) +
-           "  elapsed_s=" + std::to_string(elapsed_s()) + " — building up/down adjacency");
+           "  elapsed_s=" + std::to_string(elapsed_s()));
+  return order;
+}
+
+} // namespace
+
+CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency, OrderMethod method) {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  auto elapsed_s = [&]() {
+    return std::chrono::duration<double>(clock::now() - t0).count();
+  };
+
+  CchOrder order;
+  if (method == OrderMethod::IndependentSet) {
+    order = BuildOrderIndependentSet(g, concurrency);
+  } else {
+    LOG_INFO("cch order: nested-dissection + contract-in-order");
+    const auto t_nd = clock::now();
+    auto rank = ComputeNestedDissectionOrder(g, concurrency);
+    LOG_INFO("cch order: nested dissection finished  nd_s=" +
+             std::to_string(std::chrono::duration<double>(clock::now() - t_nd).count()));
+    order = ContractInOrder(g, rank);
+  }
+
+  LOG_INFO("cch order: building up/down adjacency  shortcuts=" +
+           std::to_string(order.shortcuts.size()));
   const auto t_adj = clock::now();
   order.build_adjacency(g);
   LOG_INFO("cch order: adjacency built  adj_s=" +
