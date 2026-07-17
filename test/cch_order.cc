@@ -87,6 +87,37 @@ TEST(CchOrder, MultiThreadProducesValidOrder) {
   EXPECT_EQ(o1.shortcuts.size(), o4.shortcuts.size());
 }
 
+// Fully connected K3: every contraction triangle already has a base edge, so
+// chordal completion must not emit redundant shortcuts.
+TEST(CchOrder, NoRedundantShortcutsWhenChordExists) {
+  CchGraph g;
+  for (int i = 0; i < 3; ++i) {
+    CchNode n;
+    n.graph_id = i;
+    n.country = "PL";
+    g.set_index(i, i);
+    g.nodes.push_back(n);
+  }
+  auto add = [&](uint32_t u, uint32_t v) {
+    CchBaseEdge e;
+    e.u = u;
+    e.v = v;
+    e.time_s = 60;
+    e.roadclass = 2;
+    g.edges.push_back(e);
+  };
+  add(0, 1);
+  add(1, 0);
+  add(0, 2);
+  add(2, 0);
+  add(1, 2);
+  add(2, 1);
+  g.build_csr();
+  auto order = BuildOrder(g);
+  expect_valid_order(order, 3);
+  EXPECT_EQ(order.shortcuts.size(), 0u);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {

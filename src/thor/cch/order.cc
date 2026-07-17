@@ -224,6 +224,14 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency) {
         ++j;
       // flat[i] is best for this (u,w) after sort.
       const Proposed& best = flat[i];
+      // Chordal completion: only insert when the residual has no u→w yet, or the
+      // new triangle is strictly fewer hops. Re-adding every triangle over an
+      // existing edge balloons memory (Europe hit ~4e9 shortcuts / OOM).
+      auto existing = out[best.sc.u].find(best.sc.w);
+      if (existing != out[best.sc.u].end() && existing->second.hops <= best.hops) {
+        i = j;
+        continue;
+      }
       const uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
       order.shortcuts.push_back(best.sc);
       merge_edge(out[best.sc.u], best.sc.w, DynEdge{sc_id, best.hops});
