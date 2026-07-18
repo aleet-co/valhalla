@@ -200,6 +200,17 @@ TEST(CchOrder, NestedDissectionBuildOrderValidOnGrid) {
   EXPECT_LT(nd.shortcuts.size(), 50000u);
 }
 
+// Above leaf_size (2048): must bipartition with balanced cuts, not micro-peels.
+TEST(CchOrder, NestedDissectionBipartitionsAboveLeaf) {
+  auto g = grid_graph(48, 48); // 2304 nodes
+  auto rank = ComputeNestedDissectionOrder(g, 2);
+  EXPECT_EQ(rank.size(), 2304u);
+  std::set<uint32_t> ranks(rank.begin(), rank.end());
+  EXPECT_EQ(ranks.size(), 2304u);
+  auto order = BuildOrder(g, 2, OrderMethod::NestedDissection);
+  expect_valid_order(order, 2304);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {

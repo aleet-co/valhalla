@@ -19,9 +19,14 @@ namespace thor {
 namespace cch {
 namespace {
 
-constexpr uint32_t kLeafSize = 16;
+// Guardrails against the Europe micro-cut death spiral (246k bipartitions /
+// depth 70 / 2% ordered in 12h). Stop recursion early, demand real mass on
+// both sides of every cut, and fall back to a balanced geometric median.
+constexpr uint32_t kLeafSize = 2048;
+constexpr uint32_t kMaxDepth = 32;
 constexpr double kTerminalFraction = 0.25;
 constexpr double kMinBalance = 0.20;
+constexpr uint32_t kMinSideAbs = 512; // also enforced as fraction of n
 constexpr uint32_t kInfCap = std::numeric_limits<uint32_t>::max() / 4;
 
 uint32_t resolve_concurrency(uint32_t concurrency) {
@@ -200,6 +205,22 @@ struct Partition {
   bool ok = false;
 };
 
+// Reject micro-peels (e.g. sides 10+27) that caused pathological depth.
+bool partition_acceptable(const Partition& p, uint32_t n) {
+  if (!p.ok || p.side_a.empty() || p.side_b.empty() || p.separator.empty())
+    return false;
+  const uint32_t min_side =
+      static_cast<uint32_t>(std::min(p.side_a.size(), p.side_b.size()));
+  const uint32_t need =
+      std::max(kMinSideAbs, static_cast<uint32_t>(kMinBalance * static_cast<double>(n)));
+  if (min_side < need)
+    return false;
+  // Separator must not dominate the fragment.
+  if (p.separator.size() * 2 > n)
+    return false;
+  return true;
+}
+
 Partition partition_inertial_flow(const Fragment& f,
                                   const CchGraph& g,
                                   const std::vector<double>& angles) {
@@ -284,69 +305,88 @@ Partition partition_inertial_flow(const Fragment& f,
         b.push_back(f.nodes[i]);
     }
 
-    const double bal =
-        static_cast<double>(std::min(a.size(), b.size())) / static_cast<double>(n);
-    if (a.empty() || b.empty() || bal < kMinBalance)
+    Partition cand;
+    cand.side_a = std::move(a);
+    cand.side_b = std::move(b);
+    cand.separator = std::move(sep);
+    cand.ok = true;
+    if (!partition_acceptable(cand, n))
       continue;
 
-    const bool better = !best.ok || sep.size() < best.separator.size() ||
-                        (sep.size() == best.separator.size() &&
-                         std::min(a.size(), b.size()) >
-                             std::min(best.side_a.size(), best.side_b.size()));
-    if (better) {
-      best.side_a = std::move(a);
-      best.side_b = std::move(b);
-      best.separator = std::move(sep);
-      best.ok = true;
-    }
+    // Prefer balance (larger min side) over a slightly smaller separator —
+    // tiny peels with skinny seps caused the Europe depth explosion.
+    const auto min_side = [](const Partition& p) {
+      return std::min(p.side_a.size(), p.side_b.size());
+    };
+    const bool better =
+        !best.ok || min_side(cand) > min_side(best) ||
+        (min_side(cand) == min_side(best) && cand.separator.size() < best.separator.size());
+    if (better)
+      best = std::move(cand);
   }
   return best;
 }
 
-// Geometric fallback: bisect by longitude median band as separator.
+// Balanced geometric median split along lon or lat (whichever yields the
+// smaller acceptable separator). Always aims for ~50/50 sides.
 Partition partition_geometric(const Fragment& f, const CchGraph& g) {
-  Partition p;
   const uint32_t n = static_cast<uint32_t>(f.nodes.size());
+  Partition best;
   if (n < 3)
-    return p;
+    return best;
 
-  std::vector<uint32_t> order(n);
-  for (uint32_t i = 0; i < n; ++i)
-    order[i] = i;
-  std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-    const auto& na = g.nodes[f.nodes[a]];
-    const auto& nb = g.nodes[f.nodes[b]];
-    if (na.lon != nb.lon)
-      return na.lon < nb.lon;
-    if (na.lat != nb.lat)
-      return na.lat < nb.lat;
-    return f.nodes[a] < f.nodes[b];
-  });
+  auto try_axis = [&](bool by_lon) {
+    std::vector<uint32_t> order(n);
+    for (uint32_t i = 0; i < n; ++i)
+      order[i] = i;
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+      const auto& na = g.nodes[f.nodes[a]];
+      const auto& nb = g.nodes[f.nodes[b]];
+      const double ka = by_lon ? na.lon : na.lat;
+      const double kb = by_lon ? nb.lon : nb.lat;
+      if (ka != kb)
+        return ka < kb;
+      const double ka2 = by_lon ? na.lat : na.lon;
+      const double kb2 = by_lon ? nb.lat : nb.lon;
+      if (ka2 != kb2)
+        return ka2 < kb2;
+      return f.nodes[a] < f.nodes[b];
+    });
 
-  const uint32_t mid = n / 2;
-  const uint32_t band = std::max(1u, n / 50); // ~2% band
-  const uint32_t lo = mid > band / 2 ? mid - band / 2 : 0;
-  const uint32_t hi = std::min(n, lo + band);
+    // Thin median band (~0.5%), at least 1 node, capped so sides stay large.
+    uint32_t band = std::max(1u, n / 200);
+    const uint32_t max_band = n > 4 ? (n / 5) : 1; // keep >=40% per side possible
+    band = std::min(band, max_band);
+    const uint32_t mid = n / 2;
+    const uint32_t lo = mid > band / 2 ? mid - band / 2 : 0;
+    const uint32_t hi = std::min(n, lo + band);
+    if (lo == 0 || hi >= n)
+      return;
 
-  std::vector<uint8_t> role(n, 0); // 0=A, 1=sep, 2=B
-  for (uint32_t i = 0; i < n; ++i) {
-    if (i >= lo && i < hi)
-      role[order[i]] = 1;
-    else if (i < lo)
-      role[order[i]] = 0;
-    else
-      role[order[i]] = 2;
-  }
-  for (uint32_t i = 0; i < n; ++i) {
-    if (role[i] == 0)
-      p.side_a.push_back(f.nodes[i]);
-    else if (role[i] == 1)
-      p.separator.push_back(f.nodes[i]);
-    else
-      p.side_b.push_back(f.nodes[i]);
-  }
-  p.ok = !p.side_a.empty() && !p.side_b.empty() && !p.separator.empty();
-  return p;
+    Partition p;
+    p.side_a.reserve(lo);
+    p.separator.reserve(hi - lo);
+    p.side_b.reserve(n - hi);
+    for (uint32_t i = 0; i < lo; ++i)
+      p.side_a.push_back(f.nodes[order[i]]);
+    for (uint32_t i = lo; i < hi; ++i)
+      p.separator.push_back(f.nodes[order[i]]);
+    for (uint32_t i = hi; i < n; ++i)
+      p.side_b.push_back(f.nodes[order[i]]);
+    p.ok = true;
+    if (!partition_acceptable(p, n))
+      return;
+    const auto min_side = [](const Partition& q) {
+      return std::min(q.side_a.size(), q.side_b.size());
+    };
+    if (!best.ok || min_side(p) > min_side(best) ||
+        (min_side(p) == min_side(best) && p.separator.size() < best.separator.size()))
+      best = std::move(p);
+  };
+
+  try_axis(true);
+  try_axis(false);
+  return best;
 }
 
 std::vector<uint32_t> order_by_degree(const Fragment& f) {
@@ -476,7 +516,7 @@ std::vector<uint32_t> nd_on_connected(NdState& st,
                                       uint32_t depth) {
   note_depth(st, depth);
   Fragment f = make_fragment(*st.ug, nodes);
-  if (f.nodes.size() <= kLeafSize)
+  if (f.nodes.size() <= kLeafSize || depth >= kMaxDepth)
     return finish_leaf(st, f, depth);
 
   // Large fragments can sit in max-flow for a long time — force a heartbeat.
@@ -485,9 +525,9 @@ std::vector<uint32_t> nd_on_connected(NdState& st,
                         f.nodes.size() >= kForceLogFragment);
 
   Partition part = partition_inertial_flow(f, *st.g, st.angles);
-  if (!part.ok)
+  if (!partition_acceptable(part, static_cast<uint32_t>(f.nodes.size())))
     part = partition_geometric(f, *st.g);
-  if (!part.ok)
+  if (!partition_acceptable(part, static_cast<uint32_t>(f.nodes.size())))
     return finish_leaf(st, f, depth);
 
   st.bipartitions->fetch_add(1, std::memory_order_relaxed);
@@ -527,7 +567,7 @@ std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes
   if (nodes.empty())
     return {};
   note_depth(st, depth);
-  if (nodes.size() <= kLeafSize) {
+  if (nodes.size() <= kLeafSize || depth >= kMaxDepth) {
     Fragment f = make_fragment(*st.ug, nodes);
     return finish_leaf(st, f, depth);
   }
@@ -537,8 +577,9 @@ std::vector<uint32_t> nd_recurse(NdState& st, const std::vector<uint32_t>& nodes
   if (comps.size() > 1) {
     std::vector<uint32_t> out;
     out.reserve(nodes.size());
+    // Connected components are siblings, not deeper ND levels — keep depth.
     for (const auto& c : comps) {
-      auto part = nd_recurse(st, c, depth + 1);
+      auto part = nd_recurse(st, c, depth);
       out.insert(out.end(), part.begin(), part.end());
     }
     return out;
@@ -558,6 +599,9 @@ std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g, uint32_t c
 
   UndirectedGraph ug = build_undirected(g);
   LOG_INFO("cch nd: undirected edges=" + std::to_string(ug.head.size() / 2) +
+           "  leaf_size=" + std::to_string(kLeafSize) +
+           "  max_depth=" + std::to_string(kMaxDepth) +
+           "  min_side_abs=" + std::to_string(kMinSideAbs) +
            "  — recursive bipartition starting");
 
   constexpr double kPi = 3.14159265358979323846;
