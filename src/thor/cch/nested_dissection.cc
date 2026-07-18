@@ -22,11 +22,15 @@ namespace {
 // Guardrails against the Europe micro-cut death spiral (246k bipartitions /
 // depth 70 / 2% ordered in 12h). Stop recursion early, demand real mass on
 // both sides of every cut, and fall back to a balanced geometric median.
-constexpr uint32_t kLeafSize = 2048;
-constexpr uint32_t kMaxDepth = 32;
+//
+// Speed: Dinic×N angles dominates mid-size fragments. Only run inertial flow
+// above kInertialFlowMinSize; below that use cheap geometric median splits.
+constexpr uint32_t kLeafSize = 8192;
+constexpr uint32_t kMaxDepth = 28;
+constexpr uint32_t kInertialFlowMinSize = 100000;
 constexpr double kTerminalFraction = 0.25;
 constexpr double kMinBalance = 0.20;
-constexpr uint32_t kMinSideAbs = 512; // also enforced as fraction of n
+constexpr uint32_t kMinSideAbs = 2048; // also enforced as fraction of n
 constexpr uint32_t kInfCap = std::numeric_limits<uint32_t>::max() / 4;
 
 uint32_t resolve_concurrency(uint32_t concurrency) {
@@ -524,10 +528,15 @@ std::vector<uint32_t> nd_on_connected(NdState& st,
   maybe_log_nd_progress(st, depth, static_cast<uint32_t>(f.nodes.size()),
                         f.nodes.size() >= kForceLogFragment);
 
-  Partition part = partition_inertial_flow(f, *st.g, st.angles);
-  if (!partition_acceptable(part, static_cast<uint32_t>(f.nodes.size())))
+  Partition part;
+  const uint32_t fn = static_cast<uint32_t>(f.nodes.size());
+  // Expensive max-flow only on large fragments; geometric is enough (and much
+  // faster) once pieces are below ~100k.
+  if (fn >= kInertialFlowMinSize)
+    part = partition_inertial_flow(f, *st.g, st.angles);
+  if (!partition_acceptable(part, fn))
     part = partition_geometric(f, *st.g);
-  if (!partition_acceptable(part, static_cast<uint32_t>(f.nodes.size())))
+  if (!partition_acceptable(part, fn))
     return finish_leaf(st, f, depth);
 
   st.bipartitions->fetch_add(1, std::memory_order_relaxed);
@@ -602,10 +611,12 @@ std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g, uint32_t c
            "  leaf_size=" + std::to_string(kLeafSize) +
            "  max_depth=" + std::to_string(kMaxDepth) +
            "  min_side_abs=" + std::to_string(kMinSideAbs) +
+           "  if_min_size=" + std::to_string(kInertialFlowMinSize) +
            "  — recursive bipartition starting");
 
+  // Two axis-aligned projections: enough for road graphs, 2× cheaper than 4.
   constexpr double kPi = 3.14159265358979323846;
-  std::vector<double> angles = {0.0, kPi / 4.0, kPi / 2.0, 3.0 * kPi / 4.0};
+  std::vector<double> angles = {0.0, kPi / 2.0};
   std::atomic<uint32_t> free_threads{threads > 1 ? threads - 1 : 0};
   std::atomic<uint64_t> bipartitions{0};
   std::atomic<uint64_t> nodes_ordered{0};
