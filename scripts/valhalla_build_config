@@ -255,6 +255,7 @@ config = {
             }
         },
         "cch": {
+            "enabled": False,
             "artifact": "/custom_files/cch_truck.bin",
             "corridor_hops": 16,
         },
@@ -600,6 +601,11 @@ help_text = {
                     "2": "The default distance within which expansion is allowed from the origin/destination on level 2 in bidirectional astar",
                 },
             }
+        },
+        "cch": {
+            "enabled": "If True, allow CCH matrix algorithm (requires a matching cch_truck.bin artifact)",
+            "artifact": "Path to the offline CCH truck artifact (cch_truck.bin)",
+            "corridor_hops": "Number of CCH corridor hops used when extracting paths",
         },
     },
     "odin": {
