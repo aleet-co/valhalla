@@ -130,6 +130,18 @@ add_definitions(-DBOOST_BIND_GLOBAL_PLACEHOLDERS)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 
+# METIS — nested-dissection order for bans-only CCH (METIS_NodeND).
+find_path(METIS_INCLUDE_DIR NAMES metis.h)
+find_library(METIS_LIBRARY NAMES metis)
+if(NOT METIS_INCLUDE_DIR OR NOT METIS_LIBRARY)
+  message(FATAL_ERROR "METIS not found (install libmetis-dev). Required for CCH nested dissection.")
+endif()
+add_library(METIS::metis UNKNOWN IMPORTED)
+set_target_properties(METIS::metis PROPERTIES
+  IMPORTED_LOCATION "${METIS_LIBRARY}"
+  INTERFACE_INCLUDE_DIRECTORIES "${METIS_INCLUDE_DIR}")
+message(STATUS "Found METIS: ${METIS_LIBRARY}")
+
 # resolve vendored libraries
 set(date_include_dir ${VALHALLA_SOURCE_DIR}/third_party/date/include)
 set(rapidjson_include_dir ${VALHALLA_SOURCE_DIR}/third_party/rapidjson/include)

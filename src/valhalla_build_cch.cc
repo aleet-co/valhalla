@@ -20,8 +20,8 @@
 using namespace valhalla;
 
 // Offline builder for the bans-only CCH matrix artifact. Reads Valhalla tiles,
-// builds the truck subgraph, computes a metric-independent contraction order
-// (nested dissection by default), and writes the CCH artifact.
+// builds the truck subgraph, computes a METIS nested-dissection order, contracts
+// with compact adjacency, and writes the CCH artifact.
 
 namespace {
 
@@ -76,8 +76,8 @@ int main(int argc, char* argv[]) {
       ("o,output", "Path to write the CCH artifact.", cxxopts::value<std::string>(output_path)->default_value("/custom_files/cch_truck.bin"))
       ("levels", "Comma-separated hierarchy levels to include (0=highway,1=arterial,2=local).", cxxopts::value<std::string>(levels_str)->default_value("0,1,2"))
       ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("7"))
-      ("order", "Contraction order: nested (inertial-flow ND, default) or independent-set.", cxxopts::value<std::string>(order_str)->default_value("nested"))
-      ("j,concurrency", "Worker threads for subgraph load + ND (0=hardware_concurrency).", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
+      ("order", "Contraction order: nested (METIS_NodeND, default) or independent-set.", cxxopts::value<std::string>(order_str)->default_value("nested"))
+      ("j,concurrency", "Worker threads for subgraph load (0=hardware_concurrency). METIS uses its own parallelism.", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
     // clang-format on
 
     auto result = options.parse(argc, argv);

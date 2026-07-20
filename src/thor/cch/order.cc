@@ -20,11 +20,20 @@ namespace cch {
 
 namespace {
 
-// Edge id space: base edges [0, num_base), shortcuts [num_base, num_base+scount).
 struct DynEdge {
   uint32_t edge_id = 0;
   uint32_t hops = 0;
 };
+
+// Compact residual adjacency (vector lists). With a METIS ND order, degrees stay
+// modest so linear scans beat 167M unordered_maps on RAM and locality.
+struct DynNbr {
+  uint32_t to = 0;
+  uint32_t edge_id = 0;
+  uint32_t hops = 0;
+};
+
+using CompactAdj = std::vector<std::vector<DynNbr>>;
 
 struct Priority {
   uint32_t degree = 0;
@@ -76,10 +85,77 @@ void parallel_for(uint32_t nthreads, size_t n, Fn&& fn) {
     th.join();
 }
 
+DynNbr* find_nbr(std::vector<DynNbr>& a, uint32_t to) {
+  for (auto& e : a) {
+    if (e.to == to)
+      return &e;
+  }
+  return nullptr;
+}
+
+const DynNbr* find_nbr(const std::vector<DynNbr>& a, uint32_t to) {
+  for (const auto& e : a) {
+    if (e.to == to)
+      return &e;
+  }
+  return nullptr;
+}
+
+void merge_nbr(std::vector<DynNbr>& a, uint32_t to, uint32_t edge_id, uint32_t hops) {
+  if (auto* p = find_nbr(a, to)) {
+    if (hops < p->hops) {
+      p->hops = hops;
+      p->edge_id = edge_id;
+    }
+    return;
+  }
+  a.push_back(DynNbr{to, edge_id, hops});
+}
+
+void erase_nbr(std::vector<DynNbr>& a, uint32_t to) {
+  a.erase(std::remove_if(a.begin(), a.end(),
+                         [to](const DynNbr& e) { return e.to == to; }),
+          a.end());
+}
+
 void merge_edge(std::unordered_map<uint32_t, DynEdge>& adj, uint32_t key, DynEdge e) {
   auto it = adj.find(key);
   if (it == adj.end() || e.hops < it->second.hops)
     adj[key] = e;
+}
+
+bool maybe_add_shortcut_compact(CchOrder& order,
+                                CompactAdj& out,
+                                CompactAdj& inc,
+                                const Proposed& best) {
+  if (const auto* existing = find_nbr(out[best.sc.u], best.sc.w)) {
+    if (existing->hops <= best.hops)
+      return false;
+  }
+  const uint32_t sc_id = order.num_base_edges + static_cast<uint32_t>(order.shortcuts.size());
+  order.shortcuts.push_back(best.sc);
+  merge_nbr(out[best.sc.u], best.sc.w, sc_id, best.hops);
+  merge_nbr(inc[best.sc.w], best.sc.u, sc_id, best.hops);
+  return true;
+}
+
+void remove_node_compact(uint32_t v,
+                         CompactAdj& out,
+                         CompactAdj& inc,
+                         std::vector<uint8_t>& active) {
+  for (const auto& e : out[v]) {
+    if (active[e.to])
+      erase_nbr(inc[e.to], v);
+  }
+  for (const auto& e : inc[v]) {
+    if (active[e.to])
+      erase_nbr(out[e.to], v);
+  }
+  out[v].clear();
+  out[v].shrink_to_fit();
+  inc[v].clear();
+  inc[v].shrink_to_fit();
+  active[v] = 0;
 }
 
 bool maybe_add_shortcut(CchOrder& order,
@@ -113,7 +189,7 @@ void remove_node(uint32_t v,
   active[v] = 0;
 }
 
-// Contract nodes in increasing rank order (low rank first).
+// Contract nodes in increasing rank order (low rank first) with compact adj.
 CchOrder ContractInOrder(const CchGraph& g, const std::vector<uint32_t>& rank) {
   using clock = std::chrono::steady_clock;
   const auto t0 = clock::now();
@@ -134,15 +210,15 @@ CchOrder ContractInOrder(const CchGraph& g, const std::vector<uint32_t>& rank) {
     by_rank[rank[v]] = v;
   }
 
-  std::vector<std::unordered_map<uint32_t, DynEdge>> out(n), inc(n);
+  CompactAdj out(n), inc(n);
   for (uint32_t ei = 0; ei < g.edges.size(); ++ei) {
     const auto& e = g.edges[ei];
-    merge_edge(out[e.u], e.v, DynEdge{ei, 1});
-    merge_edge(inc[e.v], e.u, DynEdge{ei, 1});
+    merge_nbr(out[e.u], e.v, ei, 1);
+    merge_nbr(inc[e.v], e.u, ei, 1);
   }
   std::vector<uint8_t> active(n, 1);
 
-  LOG_INFO("cch contract: sequential-by-rank  nodes=" + std::to_string(n) +
+  LOG_INFO("cch contract: compact sequential-by-rank  nodes=" + std::to_string(n) +
            " base_edges=" + std::to_string(order.num_base_edges));
 
   auto last_log = clock::now();
@@ -151,27 +227,31 @@ CchOrder ContractInOrder(const CchGraph& g, const std::vector<uint32_t>& rank) {
     if (!active[v])
       continue;
 
-    // Shortcuts among remaining neighbors for each in×out triangle through v.
-    for (const auto& [u, e_uv] : inc[v]) {
+    for (const auto& e_in : inc[v]) {
+      const uint32_t u = e_in.to;
       if (u == v || !active[u])
         continue;
-      auto ituv = out[u].find(v);
-      if (ituv == out[u].end())
+      const auto* uv = find_nbr(out[u], v);
+      if (!uv)
         continue;
-      for (const auto& [w, e_vw] : out[v]) {
+      // Copy before the inner loop: maybe_add may reallocate out[u].
+      const uint32_t uv_edge = uv->edge_id;
+      const uint32_t uv_hops = uv->hops;
+      for (const auto& e_out : out[v]) {
+        const uint32_t w = e_out.to;
         if (w == v || w == u || !active[w])
           continue;
         Proposed p;
         p.sc.u = u;
         p.sc.w = w;
         p.sc.middle = v;
-        p.sc.left = ituv->second.edge_id;
-        p.sc.right = e_vw.edge_id;
-        p.hops = ituv->second.hops + e_vw.hops;
-        maybe_add_shortcut(order, out, inc, p);
+        p.sc.left = uv_edge;
+        p.sc.right = e_out.edge_id;
+        p.hops = uv_hops + e_out.hops;
+        maybe_add_shortcut_compact(order, out, inc, p);
       }
     }
-    remove_node(v, out, inc, active);
+    remove_node_compact(v, out, inc, active);
 
     const auto now = clock::now();
     const uint32_t done = ri + 1;
@@ -383,7 +463,7 @@ CchOrder BuildOrder(const CchGraph& g, uint32_t concurrency, OrderMethod method)
   if (method == OrderMethod::IndependentSet) {
     order = BuildOrderIndependentSet(g, concurrency);
   } else {
-    LOG_INFO("cch order: nested-dissection + contract-in-order");
+    LOG_INFO("cch order: METIS nested-dissection + compact contract-in-order");
     const auto t_nd = clock::now();
     auto rank = ComputeNestedDissectionOrder(g, concurrency);
     LOG_INFO("cch order: nested dissection finished  nd_s=" +
@@ -465,7 +545,7 @@ CchOrder CchOrder::load(const std::string& path) {
   read_pod(is, sc);
   o.shortcuts.resize(sc);
   is.read(reinterpret_cast<char*>(o.shortcuts.data()), sc * sizeof(CchShortcut));
-  return o; // caller rebuilds adjacency via build_adjacency(graph)
+  return o;
 }
 
 } // namespace cch

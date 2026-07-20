@@ -10,9 +10,9 @@ namespace valhalla {
 namespace thor {
 namespace cch {
 
-// Inertial-flow nested dissection order for the truck subgraph.
-// Returns rank[v] with low rank = contract first (separator nodes last).
-// concurrency == 0 → hardware_concurrency().
+// Nested-dissection elimination order via METIS_NodeND (fill-reducing ND).
+// Returns rank[v] with low rank = contract first (separators last).
+// concurrency is accepted for API compatibility; METIS uses its own parallelism.
 std::vector<uint32_t> ComputeNestedDissectionOrder(const CchGraph& g,
                                                    uint32_t concurrency = 0);
 

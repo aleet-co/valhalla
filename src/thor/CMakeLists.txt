@@ -35,6 +35,7 @@ set(sources
 
 set(system_includes
   ${date_include_dir}
+  ${METIS_INCLUDE_DIR}
   $<$<BOOL:${WIN32}>:${dirent_include_dir}>)
 
 valhalla_module(NAME thor
@@ -60,4 +61,5 @@ valhalla_module(NAME thor
     valhalla::odin
     ${valhalla_protobuf_targets}
     Boost::boost
+    METIS::metis
     ${libprime_server_targets})

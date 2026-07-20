@@ -21,7 +21,7 @@ struct CchShortcut {
 };
 
 enum class OrderMethod {
-  NestedDissection = 0, // default: inertial-flow ND + contract in order
+  NestedDissection = 0, // default: METIS_NodeND + compact contract-in-order
   IndependentSet = 1,   // legacy parallel local-minima contraction
 };
 

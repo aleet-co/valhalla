@@ -196,19 +196,20 @@ TEST(CchOrder, NestedDissectionBuildOrderValidOnGrid) {
   auto g = grid_graph(12, 12);
   auto nd = BuildOrder(g, 2, OrderMethod::NestedDissection);
   expect_valid_order(nd, 144);
-  // Sanity: chordal completion on a 12x12 grid stays well below dense fill-in.
   EXPECT_LT(nd.shortcuts.size(), 50000u);
 }
 
-// Above leaf_size (8192): must bipartition with balanced cuts, not micro-peels.
-TEST(CchOrder, NestedDissectionBipartitionsAboveLeaf) {
-  auto g = grid_graph(96, 96); // 9216 nodes
-  auto rank = ComputeNestedDissectionOrder(g, 2);
-  EXPECT_EQ(rank.size(), 9216u);
+// METIS ND + compact contract on a larger grid: valid order, bounded fill-in.
+TEST(CchOrder, MetisNestedDissectionOnLargerGrid) {
+  auto g = grid_graph(32, 32); // 1024 nodes
+  auto rank = ComputeNestedDissectionOrder(g, 1);
+  EXPECT_EQ(rank.size(), 1024u);
   std::set<uint32_t> ranks(rank.begin(), rank.end());
-  EXPECT_EQ(ranks.size(), 9216u);
-  auto order = BuildOrder(g, 2, OrderMethod::NestedDissection);
-  expect_valid_order(order, 9216);
+  EXPECT_EQ(ranks.size(), 1024u);
+  auto order = BuildOrder(g, 1, OrderMethod::NestedDissection);
+  expect_valid_order(order, 1024);
+  // With ND, fill-in should stay well below dense complete-graph scale.
+  EXPECT_LT(order.shortcuts.size(), 200000u);
 }
 
 } // namespace

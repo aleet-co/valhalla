@@ -27,6 +27,7 @@ env DEBIAN_FRONTEND=noninteractive sudo apt install --yes --quiet \
     libgeos-dev \
     libluajit-5.1-dev \
     liblz4-dev \
+    libmetis-dev \
     libprotobuf-dev \
     libspatialite-dev \
     libsqlite3-dev \
