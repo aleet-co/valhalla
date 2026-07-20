@@ -22,7 +22,8 @@ namespace thor {
 CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
     : MatrixAlgorithm(config),
       artifact_path_(config.get<std::string>("cch.artifact", "/custom_files/cch_truck.bin")),
-      hops_(config.get<uint32_t>("cch.corridor_hops", 16)) {
+      hops_(config.get<uint32_t>("cch.corridor_hops", 16)),
+      enabled_(config.get<bool>("cch.enabled", false)) {
 }
 
 void CCHMatrix::Clear() {
@@ -37,6 +38,13 @@ bool CCHMatrix::ensure_customized(baldr::GraphReader& reader) {
   if (customize_attempted_)
     return false;
   customize_attempted_ = true;
+
+  // WIP kill-switch: keep CCH code paths but always fall back to TDM until the
+  // offline artifact build is production-ready.
+  if (!enabled_) {
+    LOG_INFO("cch: disabled (thor.cch.enabled=false); matrix requests fall back to TDM");
+    return false;
+  }
 
   std::ifstream probe(artifact_path_, std::ios::binary);
   if (!probe.good()) {

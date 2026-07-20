@@ -56,6 +56,7 @@ protected:
         layout, ways, {}, {}, VALHALLA_BUILD_DIR "test/data/cch_matrix",
         {{"service_limits.max_timedep_distance_matrix", "500000"},
          {"thor.source_to_target_algorithm", "timedistancematrix"},
+         {"thor.cch.enabled", "true"},
          {"thor.cch.artifact", VALHALLA_BUILD_DIR "test/data/cch_matrix/cch_truck.bin"},
          {"thor.cch.corridor_hops", "16"},
          {"mjolnir.timezone", VALHALLA_BUILD_DIR "test/data/tz.sqlite"}});

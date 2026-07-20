@@ -46,6 +46,7 @@ private:
 
   std::string artifact_path_;
   uint32_t hops_;
+  bool enabled_ = false;
   bool ready_ = false;
   // Negative-cache latch: once we've tried (and failed) to customize, don't
   // re-probe/re-build the truck graph on every subsequent request.

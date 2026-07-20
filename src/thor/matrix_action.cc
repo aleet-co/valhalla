@@ -36,6 +36,8 @@ thor_worker_t::get_matrix_algorithm(Api& request, const bool has_time, const std
   }
 
   // Explicit per-request CCH selection (truck-ban, source-side date_time only).
+  // Falls back to TimeDistanceMatrix when CCH is disabled, unavailable, or
+  // unsuitable for the request (warning 304).
   if (request.options().matrix_algorithm() == Options::matrix_cch) {
     const bool truck = (costing == "truck" || costing == "truck_ban");
     const bool has_depart_time =
