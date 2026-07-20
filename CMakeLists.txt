@@ -143,15 +143,29 @@ set_target_properties(METIS::metis PROPERTIES
 message(STATUS "Found METIS: ${METIS_LIBRARY}")
 
 # Uber H3 — hierarchical hex cells for truck region grid partitioning.
+# Prefer a vendored checkout; otherwise FetchContent (Docker/CI may lack the dir
+# when third_party/h3 was never committed).
 set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(BUILD_FILTERS OFF CACHE BOOL "" FORCE)
 set(BUILD_GENERATORS OFF CACHE BOOL "" FORCE)
 set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 set(ENABLE_LIBFUZZER OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-add_subdirectory(${VALHALLA_SOURCE_DIR}/third_party/h3 ${CMAKE_BINARY_DIR}/third_party/h3 EXCLUDE_FROM_ALL)
-message(STATUS "Using vendored Uber H3 from third_party/h3")
-
+set(_valhalla_h3_src "${VALHALLA_SOURCE_DIR}/third_party/h3")
+if(EXISTS "${_valhalla_h3_src}/CMakeLists.txt")
+  add_subdirectory(${_valhalla_h3_src} ${CMAKE_BINARY_DIR}/third_party/h3 EXCLUDE_FROM_ALL)
+  message(STATUS "Using vendored Uber H3 from third_party/h3")
+else()
+  include(FetchContent)
+  FetchContent_Declare(
+    h3
+    GIT_REPOSITORY https://github.com/uber/h3.git
+    GIT_TAG v4.2.1
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(h3)
+  message(STATUS "Fetched Uber H3 v4.2.1 (third_party/h3 missing)")
+endif()
+unset(_valhalla_h3_src)
 # resolve vendored libraries
 set(date_include_dir ${VALHALLA_SOURCE_DIR}/third_party/date/include)
 set(rapidjson_include_dir ${VALHALLA_SOURCE_DIR}/third_party/rapidjson/include)
