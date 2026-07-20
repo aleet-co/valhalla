@@ -43,3 +43,6 @@
 [submodule "third_party/nanobind"]
 	path = third_party/nanobind
 	url = https://github.com/wjakob/nanobind
+[submodule "third_party/h3"]
+	path = third_party/h3
+	url = https://github.com/uber/h3.git

@@ -9,6 +9,10 @@ set(sources
   cch/nested_dissection.cc
   cch/order.cc
   cch/profile.cc
+  region_grid/h3_partition.cc
+  region_grid/medoid.cc
+  region_grid/network_voronoi.cc
+  region_grid/region_grid.cc
   costmatrix.cc
   dijkstras.cc
   matrix_action.cc
@@ -47,6 +51,8 @@ valhalla_module(NAME thor
       ${VALHALLA_SOURCE_DIR}/valhalla
     PRIVATE
       ${CMAKE_BINARY_DIR}
+      ${CMAKE_BINARY_DIR}/third_party/h3/src/h3lib/include
+      ${VALHALLA_SOURCE_DIR}/third_party/h3/src/h3lib/include
   SYSTEM_INCLUDE_DIRECTORIES
     PUBLIC
       ${system_includes}
@@ -62,4 +68,5 @@ valhalla_module(NAME thor
     ${valhalla_protobuf_targets}
     Boost::boost
     METIS::metis
+    h3
     ${libprime_server_targets})

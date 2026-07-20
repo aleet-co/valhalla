@@ -142,6 +142,16 @@ set_target_properties(METIS::metis PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${METIS_INCLUDE_DIR}")
 message(STATUS "Found METIS: ${METIS_LIBRARY}")
 
+# Uber H3 — hierarchical hex cells for truck region grid partitioning.
+set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BUILD_FILTERS OFF CACHE BOOL "" FORCE)
+set(BUILD_GENERATORS OFF CACHE BOOL "" FORCE)
+set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBFUZZER OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+add_subdirectory(${VALHALLA_SOURCE_DIR}/third_party/h3 ${CMAKE_BINARY_DIR}/third_party/h3 EXCLUDE_FROM_ALL)
+message(STATUS "Using vendored Uber H3 from third_party/h3")
+
 # resolve vendored libraries
 set(date_include_dir ${VALHALLA_SOURCE_DIR}/third_party/date/include)
 set(rapidjson_include_dir ${VALHALLA_SOURCE_DIR}/third_party/rapidjson/include)
@@ -306,6 +316,7 @@ endif()
 ## Valhalla programs
 set(valhalla_programs
     valhalla_export_edges valhalla_export_ban_graph valhalla_build_cch
+    valhalla_build_region_grid
     valhalla_expand_bounding_box valhalla_service)
 
 ## Valhalla data tools

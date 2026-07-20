@@ -53,15 +53,18 @@ private:
 };
 
 // Parallel build: one GraphReader per worker thread. concurrency == 0 → hardware_concurrency.
+// When hgv_only is true, only edges with kTruckAccess are kept (transitions always kept).
 CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
                          const std::set<uint32_t>& levels = {0, 1, 2},
                          uint8_t max_roadclass = 7,
-                         uint32_t concurrency = 0);
+                         uint32_t concurrency = 0,
+                         bool hgv_only = false);
 
 // Single-reader path (runtime customize / tests). Always single-threaded.
 CchGraph BuildTruckGraph(baldr::GraphReader& reader,
                          const std::set<uint32_t>& levels = {0, 1, 2},
-                         uint8_t max_roadclass = 7);
+                         uint8_t max_roadclass = 7,
+                         bool hgv_only = false);
 
 } // namespace cch
 } // namespace thor

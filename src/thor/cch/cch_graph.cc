@@ -78,7 +78,8 @@ std::vector<CchNode> extract_nodes(GraphReader& reader, const GraphId& tile_id) 
 std::vector<CchBaseEdge> extract_edges(GraphReader& reader,
                                        const GraphId& tile_id,
                                        const CchGraph& g,
-                                       uint8_t max_roadclass) {
+                                       uint8_t max_roadclass,
+                                       bool hgv_only) {
   std::vector<CchBaseEdge> edges;
   auto tile = reader.GetGraphTile(tile_id);
   if (tile == nullptr)
@@ -93,6 +94,8 @@ std::vector<CchBaseEdge> extract_edges(GraphReader& reader,
     for (uint32_t i = 0; i < node->edge_count(); ++i) {
       const DirectedEdge* de = tile->directededge(node->edge_index() + i);
       if (de->is_shortcut())
+        continue;
+      if (hgv_only && !(de->forwardaccess() & kTruckAccess))
         continue;
       if (static_cast<uint8_t>(de->classification()) > max_roadclass)
         continue;
@@ -155,7 +158,8 @@ CchGraph build_from_tiles(const std::vector<GraphId>& tiles,
                           GraphReader* single_reader,
                           uint8_t max_roadclass,
                           uint32_t concurrency,
-                          uint64_t tile_build_hash) {
+                          uint64_t tile_build_hash,
+                          bool hgv_only) {
   CchGraph g;
   const auto t0 = clock::now();
   const size_t tiles_total = tiles.size();
@@ -234,7 +238,7 @@ CchGraph build_from_tiles(const std::vector<GraphId>& tiles,
         const size_t i = next.fetch_add(1, std::memory_order_relaxed);
         if (i >= tiles_total)
           break;
-        edges_by_tile[i] = extract_edges(reader, tiles[i], g, max_roadclass);
+        edges_by_tile[i] = extract_edges(reader, tiles[i], g, max_roadclass, hgv_only);
         const size_t edge_count =
             edges_seen.fetch_add(edges_by_tile[i].size(), std::memory_order_relaxed) +
             edges_by_tile[i].size();
@@ -307,19 +311,22 @@ void CchGraph::build_csr() {
 CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
                          const std::set<uint32_t>& levels,
                          uint8_t max_roadclass,
-                         uint32_t concurrency) {
+                         uint32_t concurrency,
+                         bool hgv_only) {
   GraphReader probe(mjolnir_config);
   auto tiles = collect_tiles(probe, levels);
   const uint64_t hash = probe.GetTileSet().size();
-  return build_from_tiles(tiles, &mjolnir_config, nullptr, max_roadclass, concurrency, hash);
+  return build_from_tiles(tiles, &mjolnir_config, nullptr, max_roadclass, concurrency, hash,
+                          hgv_only);
 }
 
 CchGraph BuildTruckGraph(GraphReader& reader,
                          const std::set<uint32_t>& levels,
-                         uint8_t max_roadclass) {
+                         uint8_t max_roadclass,
+                         bool hgv_only) {
   auto tiles = collect_tiles(reader, levels);
   const uint64_t hash = reader.GetTileSet().size();
-  return build_from_tiles(tiles, nullptr, &reader, max_roadclass, 1, hash);
+  return build_from_tiles(tiles, nullptr, &reader, max_roadclass, 1, hash, hgv_only);
 }
 
 } // namespace cch
