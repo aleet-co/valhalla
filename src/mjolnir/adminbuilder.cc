@@ -180,7 +180,8 @@ void buffer_polygon(const bg::polygon_ll_t& polygon, bg::multipolygon_ll_t& mult
  * @param outer        whether or not we should build a lookup for outers or inners
  * @param lines        ring segments that are built as output to be later connected together
  * @param line_lookup  a look up to find ring segments to help in connecting them together
- * @return true if all the members of the relation had corresponding geometry
+ * @return true (always); missing members are skipped with warnings so callers can
+ *         still form rings from whatever geometry is present in the extract
  */
 bool to_segments(const OSMAdminData& admin_data,
                  const OSMAdmin& admin,
@@ -196,26 +197,33 @@ bool to_segments(const OSMAdminData& admin_data,
       continue;
 
     // A relation may be included in an extract but it's members may not
-    // Example:  PA extract can contain an NY relation but wont have all its members
+    // Example:  PA extract can contain an NY relation but wont have all its members.
+    // Skip missing members and continue so mainland-complete stand-ins (and large
+    // timezone polygons) can still form rings from the ways that are present.
     auto w_itr = admin_data.way_map.find(memberid);
     if (w_itr == admin_data.way_map.end()) {
       LOG_WARN(name + " (" + std::to_string(admin.id) + ") is missing way member " +
-               std::to_string(memberid));
-      return false;
+               std::to_string(memberid) + " — skipping member");
+      continue;
     }
 
     // build the line geom
     bg::ring_ll_t coords;
+    bool missing_node = false;
     for (const auto node_id : w_itr->second) {
       // although unlikely, we could have the way but not all the nodes
       auto n_itr = admin_data.shape_map.find(node_id);
       if (n_itr == admin_data.shape_map.end()) {
         LOG_WARN(name + " (" + std::to_string(admin.id) + ") with way member " +
-                 std::to_string(memberid) + " is missing node " + std::to_string(node_id));
-        return false;
+                 std::to_string(memberid) + " is missing node " + std::to_string(node_id) +
+                 " — skipping way");
+        missing_node = true;
+        break;
       }
       coords.push_back(n_itr->second);
     }
+    if (missing_node)
+      continue;
 
     // remember how to find this line
     if (!coords.empty()) {
@@ -505,23 +513,20 @@ bool BuildAdminFromPBF(const boost::property_tree::ptree& pt,
                                                 admin.id);
     LOG_DEBUG("Building admin: " + admin_info.first);
 
-    // do inners and outers separately
-    bool complete = true;
+    // do inners and outers separately (missing extract members are skipped inside
+    // to_segments so we can still form rings from whatever geometry is present)
     std::array<std::vector<bg::ring_ll_t>, 2> outers_inners;
     for (bool outer : {true, false}) {
       // grab the ring segments and a lookup to find them when connecting them
       std::vector<bg::ring_ll_t> lines;
       std::unordered_multimap<valhalla::midgard::PointLL, size_t> line_lookup;
-      if (!to_segments(admin_data, admin, admin_info.first, outer, lines, line_lookup)) {
-        complete = false;
-        break;
-      }
+      to_segments(admin_data, admin, admin_info.first, outer, lines, line_lookup);
       // connect them into a series of one or more rings
       to_rings(admin_info, lines, line_lookup, outers_inners[!outer], outers_inners[1]);
     }
 
-    // if we didn't have a complete relation (ie some members were missing) we bail
-    if (!complete || outers_inners.front().empty()) {
+    // Bail only when no outer rings could be formed at all.
+    if (outers_inners.front().empty()) {
       LOG_WARN(admin_info.first + " (" + std::to_string(admin_info.second) +
                ") is degenerate and will be skipped");
       continue;

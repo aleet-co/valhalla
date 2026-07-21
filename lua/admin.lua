@@ -165,6 +165,38 @@ function rels_proc (kv, nokeys)
      return 0, kv
   end
 
+  -- Netherlands: legal "Europees Nederland" polygon (Kingdom level-2 + land level-3
+  -- both still tend to miss Caribbean members / fail geometry on Europe extracts).
+  if kv["type"] == "boundary" and kv["boundary"] == "legal" and
+     (kv["name:en"] == "European Netherlands" or kv["name"] == "Europees Nederland" or
+      kv["timezone"] == "Europe/Amsterdam") then
+     kv["boundary"] = "administrative"
+     kv["admin_level"] = "2"
+     kv["iso_code"] = "NL"
+     kv["name"] = "Netherlands"
+     kv["name:en"] = "Netherlands"
+     kv["drive_on_right"] = "true"
+     kv["allow_intersection_names"] = "false"
+     for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
+     return 0, kv
+  end
+
+  -- Russia: Europe/Moscow timezone covers most of European Russia (full RU level-2
+  -- and federal districts are incomplete in Geofabrik Europe extracts).
+  if kv["type"] == "boundary" and kv["boundary"] == "timezone" and
+     (kv["timezone"] == "Europe/Moscow" or kv["name:en"] == "Moscow Time" or
+      kv["name"] == "Московское время") then
+     kv["boundary"] = "administrative"
+     kv["admin_level"] = "2"
+     kv["iso_code"] = "RU"
+     kv["name"] = "Russia"
+     kv["name:en"] = "Russia"
+     kv["drive_on_right"] = "true"
+     kv["allow_intersection_names"] = "false"
+     for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
+     return 0, kv
+  end
+
   -- Mainland Norway land boundary (OSM r1059668): administrative, but no admin_level tag.
   -- Official level-2 Norway also pulls in Svalbard / Bouvet / Jan Mayen.
   if kv["type"] == "boundary" and kv["boundary"] == "administrative" and
