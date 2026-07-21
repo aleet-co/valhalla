@@ -112,6 +112,81 @@ TEST(TruckBanRules, TransitTimeScenarioDepartureBeforeBanEntryDuringBan) {
   EXPECT_FALSE(IsEdgeAllowed("AT", entry_during_ban, tz, 8.0f, RoadClass::kPrimary));
 }
 
+TEST(TruckBanRules, SwitzerlandSundayAndNightBanAtLowerWeight) {
+  const uint32_t tz = TzIndex("Europe/Zurich");
+  const uint64_t sunday = LocalEpoch("2026-03-15T10:00", "Europe/Zurich");
+  const uint64_t night = LocalEpoch("2026-03-16T23:00", "Europe/Zurich");
+  const uint64_t monday_day = LocalEpoch("2026-03-16T12:00", "Europe/Zurich");
+
+  EXPECT_FALSE(IsEdgeAllowed("CH", sunday, tz, 4.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("CH", night, tz, 4.0f, RoadClass::kPrimary));
+  EXPECT_TRUE(IsEdgeAllowed("CH", monday_day, tz, 4.0f, RoadClass::kPrimary));
+  EXPECT_TRUE(IsEdgeAllowed("CH", sunday, tz, 3.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, LiechtensteinMirrorsSwitzerland) {
+  const uint32_t tz = TzIndex("Europe/Zurich");
+  const uint64_t sunday = LocalEpoch("2026-03-15T10:00", "Europe/Zurich");
+  EXPECT_FALSE(IsEdgeAllowed("LI", sunday, tz, 4.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, FranceWeekendAndEveOfHoliday) {
+  const uint32_t tz = TzIndex("Europe/Paris");
+  const uint64_t sat_evening = LocalEpoch("2026-03-14T23:00", "Europe/Paris");
+  const uint64_t sunday = LocalEpoch("2026-03-15T10:00", "Europe/Paris");
+  const uint64_t monday = LocalEpoch("2026-03-16T10:00", "Europe/Paris");
+  // 2026-05-01 is a French public holiday (Friday); eve is Thursday 22:00+.
+  const uint64_t eve_of_holiday = LocalEpoch("2026-04-30T23:00", "Europe/Paris");
+  const uint64_t summer_sat = LocalEpoch("2026-07-11T10:00", "Europe/Paris");
+
+  EXPECT_FALSE(IsEdgeAllowed("FR", sat_evening, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("FR", sunday, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_TRUE(IsEdgeAllowed("FR", monday, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("FR", eve_of_holiday, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("FR", summer_sat, tz, 8.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, HungarySummerSaturdayStartsEarlier) {
+  const uint32_t tz = TzIndex("Europe/Budapest");
+  const uint64_t winter_sat_afternoon = LocalEpoch("2026-03-14T16:00", "Europe/Budapest");
+  const uint64_t winter_sat_evening = LocalEpoch("2026-03-14T23:00", "Europe/Budapest");
+  const uint64_t summer_sat_afternoon = LocalEpoch("2026-07-11T16:00", "Europe/Budapest");
+
+  EXPECT_TRUE(IsEdgeAllowed("HU", winter_sat_afternoon, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("HU", winter_sat_evening, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("HU", summer_sat_afternoon, tz, 8.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, ItalySeasonalSundayHours) {
+  const uint32_t tz = TzIndex("Europe/Rome");
+  const uint64_t winter_before = LocalEpoch("2026-03-15T08:00", "Europe/Rome");
+  const uint64_t winter_during = LocalEpoch("2026-03-15T10:00", "Europe/Rome");
+  const uint64_t summer_early = LocalEpoch("2026-07-12T08:00", "Europe/Rome");
+
+  EXPECT_TRUE(IsEdgeAllowed("IT", winter_before, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("IT", winter_during, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_FALSE(IsEdgeAllowed("IT", summer_early, tz, 8.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, CzechiaMotorwayTrunkOnly) {
+  const uint32_t tz = TzIndex("Europe/Prague");
+  const uint64_t sunday = LocalEpoch("2026-03-15T14:00", "Europe/Prague");
+
+  EXPECT_FALSE(IsEdgeAllowed("CZ", sunday, tz, 8.0f, RoadClass::kMotorway));
+  EXPECT_FALSE(IsEdgeAllowed("CZ", sunday, tz, 8.0f, RoadClass::kTrunk));
+  EXPECT_TRUE(IsEdgeAllowed("CZ", sunday, tz, 8.0f, RoadClass::kPrimary));
+}
+
+TEST(TruckBanRules, SlovakiaSundayMotorwayBan) {
+  const uint32_t tz = TzIndex("Europe/Prague");
+  const uint64_t sunday = LocalEpoch("2026-03-15T10:00", "Europe/Prague");
+  const uint64_t monday = LocalEpoch("2026-03-16T10:00", "Europe/Prague");
+
+  EXPECT_FALSE(IsEdgeAllowed("SK", sunday, tz, 8.0f, RoadClass::kMotorway));
+  EXPECT_TRUE(IsEdgeAllowed("SK", sunday, tz, 8.0f, RoadClass::kPrimary));
+  EXPECT_TRUE(IsEdgeAllowed("SK", monday, tz, 8.0f, RoadClass::kMotorway));
+}
+
 int main(int argc, char** argv) {
   setenv("TRUCK_BAN_CACHE_ENABLED", "0", 1);
   ::testing::InitGoogleTest(&argc, argv);

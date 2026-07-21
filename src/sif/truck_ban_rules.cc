@@ -112,13 +112,40 @@ bool InMinutes(int hour, int minute, int start_hour, int start_minute, int end_h
 }
 
 bool IsHoliday(const char* country_iso, int ymd) {
-  if (country_iso[0] == 'A' && country_iso[1] == 'T') {
-    return AtHolidays().find(static_cast<uint32_t>(ymd)) != AtHolidays().end();
+  const auto* set = [&]() -> const std::unordered_set<uint32_t>* {
+    if (country_iso[0] == 'A' && country_iso[1] == 'T') {
+      return &AtHolidays();
+    }
+    if (country_iso[0] == 'D' && country_iso[1] == 'E') {
+      return &DeHolidays();
+    }
+    if (country_iso[0] == 'C' && country_iso[1] == 'H') {
+      return &ChHolidays();
+    }
+    if (country_iso[0] == 'L' && country_iso[1] == 'I') {
+      return &LiHolidays();
+    }
+    if (country_iso[0] == 'F' && country_iso[1] == 'R') {
+      return &FrHolidays();
+    }
+    if (country_iso[0] == 'H' && country_iso[1] == 'U') {
+      return &HuHolidays();
+    }
+    if (country_iso[0] == 'I' && country_iso[1] == 'T') {
+      return &ItHolidays();
+    }
+    if (country_iso[0] == 'C' && country_iso[1] == 'Z') {
+      return &CzHolidays();
+    }
+    if (country_iso[0] == 'S' && country_iso[1] == 'K') {
+      return &SkHolidays();
+    }
+    return nullptr;
+  }();
+  if (set == nullptr) {
+    return false;
   }
-  if (country_iso[0] == 'D' && country_iso[1] == 'E') {
-    return DeHolidays().find(static_cast<uint32_t>(ymd)) != DeHolidays().end();
-  }
-  return false;
+  return set->find(static_cast<uint32_t>(ymd)) != set->end();
 }
 
 bool ScopeMatches(BanScope scope, RoadClass road_class) {
@@ -141,6 +168,32 @@ bool MonthInRange(uint8_t month, uint8_t start_month, uint8_t end_month) {
   return month >= start_month || month <= end_month;
 }
 
+bool MonthMatches(uint16_t months_mask, uint8_t month) {
+  if (months_mask == 0) {
+    return true; // all months
+  }
+  if (month < 1 || month > 12) {
+    return false;
+  }
+  return (months_mask & MonthBit(month)) != 0;
+}
+
+int NextCalendarYmd(int year, int month, int day) {
+  static constexpr int kDaysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+  int dim = kDaysInMonth[month];
+  if (month == 2 && leap) {
+    dim = 29;
+  }
+  if (day < dim) {
+    return year * 10000 + month * 100 + (day + 1);
+  }
+  if (month < 12) {
+    return year * 10000 + (month + 1) * 100 + 1;
+  }
+  return (year + 1) * 10000 + 101;
+}
+
 bool IsBannedByRules(const CountryRules& rules,
                      const char* country_iso,
                      const LocalBanTime& local,
@@ -150,10 +203,14 @@ bool IsBannedByRules(const CountryRules& rules,
   }
 
   const uint8_t weekday_bit = WeekdayBit(static_cast<uint8_t>(local.weekday));
+  const uint8_t month = static_cast<uint8_t>(local.month);
 
   for (size_t i = 0; i < rules.weekly_count; ++i) {
     const WeeklyRule& rule = rules.weekly[i];
     if ((rule.weekdays_mask & weekday_bit) == 0) {
+      continue;
+    }
+    if (!MonthMatches(rule.months_mask, month)) {
       continue;
     }
     if (!ScopeMatches(rule.scope, road_class)) {
@@ -167,6 +224,9 @@ bool IsBannedByRules(const CountryRules& rules,
   if (IsHoliday(country_iso, local.ymd)) {
     for (size_t i = 0; i < rules.holiday_count; ++i) {
       const HolidayRule& rule = rules.holiday[i];
+      if (!MonthMatches(rule.months_mask, month)) {
+        continue;
+      }
       if (!ScopeMatches(rule.scope, road_class)) {
         continue;
       }
@@ -178,7 +238,7 @@ bool IsBannedByRules(const CountryRules& rules,
 
   for (size_t i = 0; i < rules.seasonal_count; ++i) {
     const SeasonalRule& rule = rules.seasonal[i];
-    if (!MonthInRange(static_cast<uint8_t>(local.month), rule.start_month, rule.end_month)) {
+    if (!MonthInRange(month, rule.start_month, rule.end_month)) {
       continue;
     }
     if ((rule.weekdays_mask & weekday_bit) == 0) {
@@ -189,6 +249,21 @@ bool IsBannedByRules(const CountryRules& rules,
     }
     if (WindowActive(rule.window, local)) {
       return true;
+    }
+  }
+
+  if (rules.eve_of_holiday_count > 0) {
+    const int next_ymd = NextCalendarYmd(local.year, local.month, local.day);
+    if (IsHoliday(country_iso, next_ymd)) {
+      for (size_t i = 0; i < rules.eve_of_holiday_count; ++i) {
+        const EveOfHolidayRule& rule = rules.eve_of_holiday[i];
+        if (!ScopeMatches(rule.scope, road_class)) {
+          continue;
+        }
+        if (WindowActive(rule.window, local)) {
+          return true;
+        }
+      }
     }
   }
 
