@@ -25,6 +25,7 @@ RegionGridResult BuildRegionGrid(const cch::CchGraph& graph, const RegionGridOpt
     return result;
   }
 
+  LOG_INFO("region_grid: choosing medoids for " + std::to_string(cells.size()) + " cells...");
   auto medoid_nodes =
       ChooseMedoids(graph, cells, options.medoid_sample_cap, options.unreachable_penalty_s);
 
@@ -47,6 +48,7 @@ RegionGridResult BuildRegionGrid(const cch::CchGraph& graph, const RegionGridOpt
     medoid_region_ids.push_back(i);
   }
 
+  LOG_INFO("region_grid: computing network Voronoi...");
   auto voronoi = ComputeNetworkVoronoi(graph, medoid_nodes, medoid_region_ids);
   result.node_regions = std::move(voronoi.node_regions);
   result.euclidean_fallback_count = voronoi.euclidean_fallback_count;

@@ -1,10 +1,12 @@
 #include "thor/region_grid/h3_partition.h"
+#include "thor/region_grid/progress_log.h"
 
 #include "midgard/logging.h"
 
 #include <h3api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -135,6 +137,11 @@ std::vector<CellSeed> tune_country_cells(const cch::CchGraph& graph,
   }
 
   // Still too many: greedily merge smallest into a same-country H3 neighbor that exists.
+  const size_t merge_start = cells.size();
+  const auto t_merge = std::chrono::steady_clock::now();
+  auto last_merge_log = t_merge;
+  const std::string merge_label = "partition merge " + country;
+  size_t merge_iters = 0;
   while (cells.size() > target_c) {
     // Find lightest cell
     uint64_t lightest = 0;
@@ -177,6 +184,15 @@ std::vector<CellSeed> tune_country_cells(const cch::CchGraph& graph,
     dst.nodes.insert(dst.nodes.end(), src.nodes.begin(), src.nodes.end());
     dst.weight += src.weight;
     cells.erase(lightest);
+    ++merge_iters;
+
+    if (merge_start > target_c && (merge_iters & 63u) == 0) {
+      const size_t merged = merge_start - cells.size();
+      const size_t need = merge_start - target_c;
+      MaybeLogProgress(merge_label.c_str(), merged, need, t_merge, &last_merge_log, 30.0,
+                       "cells_left=" + std::to_string(cells.size()) +
+                           " target=" + std::to_string(target_c));
+    }
   }
 
   // Too few cells: split heaviest at finer resolution.
@@ -336,6 +352,10 @@ std::vector<CellSeed> PartitionH3Cells(const cch::CchGraph& graph, const RegionG
   std::sort(countries.begin(), countries.end());
 
   uint32_t assigned = 0;
+  const auto t_part = std::chrono::steady_clock::now();
+  auto last_part_log = t_part;
+  LOG_INFO("region_grid: partition start  countries=" + std::to_string(countries.size()) +
+           " target=" + std::to_string(options.target_regions));
   for (size_t i = 0; i < countries.size(); ++i) {
     const auto& iso = countries[i];
     const auto& agg = by_country[iso];
@@ -347,11 +367,16 @@ std::vector<CellSeed> PartitionH3Cells(const cch::CchGraph& graph, const RegionG
     assigned += static_cast<uint32_t>(seeds.size());
     for (auto& s : seeds)
       all.push_back(std::move(s));
+
+    MaybeLogProgress("partition countries", i + 1, countries.size(), t_part, &last_part_log, 30.0,
+                     "country=" + iso + " cells=" + std::to_string(all.size()) +
+                         " assigned=" + std::to_string(assigned));
   }
 
   LOG_INFO("region_grid: partition done  countries=" + std::to_string(countries.size()) +
            " cells=" + std::to_string(all.size()) + " target=" +
-           std::to_string(options.target_regions));
+           std::to_string(options.target_regions) +
+           "  elapsed=" + FormatDuration(ElapsedSeconds(t_part)));
   return all;
 }
 

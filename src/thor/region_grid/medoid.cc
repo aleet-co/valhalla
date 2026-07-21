@@ -1,10 +1,12 @@
 #include "thor/region_grid/medoid.h"
+#include "thor/region_grid/progress_log.h"
 
 #include "midgard/logging.h"
 
 #include <h3api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <queue>
 #include <unordered_map>
@@ -127,62 +129,69 @@ std::vector<uint32_t> ChooseMedoids(const cch::CchGraph& graph,
                                     const std::vector<CellSeed>& cells,
                                     uint32_t sample_cap,
                                     uint32_t unreachable_penalty_s) {
+  using clock = std::chrono::steady_clock;
   // Index all nodes by H3 at each cell's resolution; build per-res maps lazily.
   std::unordered_map<int, std::unordered_map<uint64_t, std::vector<uint32_t>>> by_res;
+
+  LOG_INFO("region_grid: medoids start  cells=" + std::to_string(cells.size()) +
+           " sample_cap=" + std::to_string(sample_cap));
+  const auto t0 = clock::now();
+  auto last_log = t0;
 
   std::vector<uint32_t> medoids(cells.size(), 0);
   for (size_t ci = 0; ci < cells.size(); ++ci) {
     const auto& cell = cells[ci];
     if (cell.node_indices.empty()) {
       medoids[ci] = 0;
-      continue;
-    }
-    if (cell.node_indices.size() == 1) {
+    } else if (cell.node_indices.size() == 1) {
       medoids[ci] = cell.node_indices[0];
-      continue;
+    } else {
+      const int res = H3Resolution(cell.h3_index);
+      auto rit = by_res.find(res);
+      if (rit == by_res.end()) {
+        auto& m = by_res[res];
+        for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
+          const auto& n = graph.nodes[i];
+          const uint64_t h = LatLngToH3(n.lat, n.lon, res);
+          if (h != 0)
+            m[h].push_back(i);
+        }
+        rit = by_res.find(res);
+      }
+      auto allow = build_halo_allow(graph, cell, rit->second);
+      auto samples = sample_nodes(cell.node_indices, sample_cap);
+
+      uint64_t best_score = std::numeric_limits<uint64_t>::max();
+      uint32_t best_node = cell.node_indices[0];
+      uint8_t best_rc = 255;
+
+      for (uint32_t cand : samples) {
+        auto dist = dijkstra_restricted(graph, cand, allow);
+        uint64_t score = 0;
+        for (uint32_t t : samples) {
+          auto it = dist.find(t);
+          if (it == dist.end())
+            score += unreachable_penalty_s;
+          else
+            score += it->second;
+        }
+        const uint8_t rc = best_incident_roadclass(graph, cand);
+        if (score < best_score || (score == best_score && rc < best_rc) ||
+            (score == best_score && rc == best_rc && cand < best_node)) {
+          best_score = score;
+          best_node = cand;
+          best_rc = rc;
+        }
+      }
+      medoids[ci] = best_node;
     }
 
-    const int res = H3Resolution(cell.h3_index);
-    auto rit = by_res.find(res);
-    if (rit == by_res.end()) {
-      auto& m = by_res[res];
-      for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
-        const auto& n = graph.nodes[i];
-        const uint64_t h = LatLngToH3(n.lat, n.lon, res);
-        if (h != 0)
-          m[h].push_back(i);
-      }
-      rit = by_res.find(res);
-    }
-    auto allow = build_halo_allow(graph, cell, rit->second);
-    auto samples = sample_nodes(cell.node_indices, sample_cap);
-
-    uint64_t best_score = std::numeric_limits<uint64_t>::max();
-    uint32_t best_node = cell.node_indices[0];
-    uint8_t best_rc = 255;
-
-    for (uint32_t cand : samples) {
-      auto dist = dijkstra_restricted(graph, cand, allow);
-      uint64_t score = 0;
-      for (uint32_t t : samples) {
-        auto it = dist.find(t);
-        if (it == dist.end())
-          score += unreachable_penalty_s;
-        else
-          score += it->second;
-      }
-      const uint8_t rc = best_incident_roadclass(graph, cand);
-      if (score < best_score || (score == best_score && rc < best_rc) ||
-          (score == best_score && rc == best_rc && cand < best_node)) {
-        best_score = score;
-        best_node = cand;
-        best_rc = rc;
-      }
-    }
-    medoids[ci] = best_node;
+    MaybeLogProgress("medoids", ci + 1, cells.size(), t0, &last_log, 30.0,
+                     "country=" + (cell.country.empty() ? "XX" : cell.country));
   }
 
-  LOG_INFO("region_grid: medoids chosen for " + std::to_string(cells.size()) + " cells");
+  LOG_INFO("region_grid: medoids done  cells=" + std::to_string(cells.size()) +
+           "  elapsed=" + FormatDuration(ElapsedSeconds(t0)));
   return medoids;
 }
 
