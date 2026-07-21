@@ -125,7 +125,11 @@ function ways_proc (kv, nokeys)
   return filter, kv, 0, 0
 end
 
-  --we save admins as 2(country) or 4(state/prov).  
+-- We save admins as 2(country) or 4(state/prov).
+-- Geofabrik Europe extracts omit overseas / Asian members of some admin_level=2
+-- "empire" relations, so valhalla_build_admins marks them degenerate and skips them
+-- (ES/NL/NO/RU historically missing). Mirror the France workaround: drop the broken
+-- level-2 relation and promote a mainland-complete stand-in with a hard-coded ISO.
 function rels_proc (kv, nokeys)
 
   if (kv["type"] == "boundary" and kv["default_language"] and
@@ -146,19 +150,72 @@ function rels_proc (kv, nokeys)
      return 0, kv
   end
 
+  -- Spain: Europe/Madrid timezone covers peninsular Spain + Balearics (not Canarias).
+  if kv["type"] == "boundary" and kv["boundary"] == "timezone" and
+     (kv["timezone"] == "Europe/Madrid" or kv["name"] == "Zona Horaria de Europa/Madrid" or
+      kv["name:en"] == "Europe/Madrid Timezone") then
+     kv["boundary"] = "administrative"
+     kv["admin_level"] = "2"
+     kv["iso_code"] = "ES"
+     kv["name"] = "Spain"
+     kv["name:en"] = "Spain"
+     kv["drive_on_right"] = "true"
+     kv["allow_intersection_names"] = "false"
+     for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
+     return 0, kv
+  end
+
+  -- Mainland Norway land boundary (OSM r1059668): administrative, but no admin_level tag.
+  -- Official level-2 Norway also pulls in Svalbard / Bouvet / Jan Mayen.
+  if kv["type"] == "boundary" and kv["boundary"] == "administrative" and
+     (kv["admin_level"] == nil or kv["admin_level"] == "") and
+     (kv["name:en"] == "Norway" or kv["name"] == "Norge") then
+     kv["admin_level"] = "2"
+     kv["iso_code"] = "NO"
+     kv["name"] = "Norway"
+     kv["name:en"] = "Norway"
+     kv["drive_on_right"] = "true"
+     kv["allow_intersection_names"] = "false"
+     for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
+     return 0, kv
+  end
+
   if (kv["type"] == "boundary" and (kv["boundary"] == "administrative" or kv["boundary"] == "territorial") and
      (kv["admin_level"] == "2" or kv["admin_level"] == "3" or kv["admin_level"] == "4" or kv["admin_level"] == "6")) then
 
+     -- Keep only selected admin_level=3 areas (promoted to country below).
      if (kv["admin_level"] == "3") then
-        if (kv["name"] ~= "Guyane" and kv["name"] ~= "Guadeloupe" and  kv["name"] ~= "La Réunion" and
-            kv["name"] ~= "Martinique" and kv["name"] ~= "Mayotte" and kv["name"] ~= "Saint-Pierre-et-Miquelon" and
-            kv["name"] ~= "Saint-Barthélemy" and  kv["name"] ~= "Saint-Martin (France)" and kv["name"] ~= "Polynésie Française" and
-            kv["name"] ~= "Wallis-et-Futuna" and kv["name"] ~= "Nouvelle-Calédonie" and kv["name"] ~= "Île de Clipperton" and
-            kv["name"] ~= "Terres australes et antarctiques françaises" and kv["name:en"] ~= "Metropolitan France" and
-            kv["name:en"] ~= "Hong Kong" and kv["name"] ~= "Metro Manila") then
-               return 1, kv
-        elseif kv["default_language"] == nil and kv["name:en"] ~= "Hong Kong" and kv["name"] ~= "Metro Manila" then
-	    kv["default_language"] = "fr"
+        local keep_l3 =
+          kv["name"] == "Guyane" or kv["name"] == "Guadeloupe" or kv["name"] == "La Réunion" or
+          kv["name"] == "Martinique" or kv["name"] == "Mayotte" or kv["name"] == "Saint-Pierre-et-Miquelon" or
+          kv["name"] == "Saint-Barthélemy" or kv["name"] == "Saint-Martin (France)" or
+          kv["name"] == "Polynésie Française" or kv["name"] == "Wallis-et-Futuna" or
+          kv["name"] == "Nouvelle-Calédonie" or kv["name"] == "Île de Clipperton" or
+          kv["name"] == "Terres australes et antarctiques françaises" or
+          kv["name:en"] == "Metropolitan France" or
+          kv["name:en"] == "Hong Kong" or kv["name"] == "Metro Manila" or
+          -- European Netherlands (land) inside the Kingdom relation
+          kv["name:en"] == "Netherlands" or kv["name"] == "Nederland" or
+          -- European Russia federal districts (full RU level-2 is not in Europe extract)
+          kv["name:en"] == "Central Federal District" or
+          kv["name:en"] == "Northwestern Federal District" or
+          kv["name:en"] == "Southern Federal District" or
+          kv["name:en"] == "North Caucasian Federal District" or
+          kv["name:en"] == "Volga Federal District"
+        if not keep_l3 then
+          return 1, kv
+        end
+        -- French overseas / metro default language only
+        if kv["default_language"] == nil and
+           (kv["name:en"] == "Metropolitan France" or kv["name"] == "Guyane" or
+            kv["name"] == "Guadeloupe" or kv["name"] == "La Réunion" or
+            kv["name"] == "Martinique" or kv["name"] == "Mayotte" or
+            kv["name"] == "Saint-Pierre-et-Miquelon" or kv["name"] == "Saint-Barthélemy" or
+            kv["name"] == "Saint-Martin (France)" or kv["name"] == "Polynésie Française" or
+            kv["name"] == "Wallis-et-Futuna" or kv["name"] == "Nouvelle-Calédonie" or
+            kv["name"] == "Île de Clipperton" or
+            kv["name"] == "Terres australes et antarctiques françaises") then
+          kv["default_language"] = "fr"
         end
      end
 
@@ -166,8 +223,13 @@ function rels_proc (kv, nokeys)
        return 1, kv
      end
 
+     -- Drop incomplete empire-style level-2 country relations (Geofabrik Europe extract).
      if kv["admin_level"] == "2" then
-        if kv["name"] == "France" then
+        if kv["name"] == "France" or
+           kv["name:en"] == "Spain" or kv["name"] == "España" or
+           kv["name:en"] == "Netherlands" or kv["name"] == "Nederland" or
+           kv["name:en"] == "Norway" or kv["name"] == "Norge" or
+           kv["name:en"] == "Russia" or kv["name"] == "Россия" then
           return 1, kv
         elseif kv["name:en"] == "Abkhazia" or kv["name:en"] == "South Ossetia" then
           kv["admin_level"] = "4"
@@ -183,6 +245,18 @@ function rels_proc (kv, nokeys)
        if kv["name:en"] == "Metropolitan France" then
          kv["name"] = "France"
          kv["iso_code"] = "FR"
+       elseif kv["name:en"] == "Netherlands" or kv["name"] == "Nederland" then
+         kv["name"] = "Netherlands"
+         kv["name:en"] = "Netherlands"
+         kv["iso_code"] = "NL"
+       elseif kv["name:en"] == "Central Federal District" or
+              kv["name:en"] == "Northwestern Federal District" or
+              kv["name:en"] == "Southern Federal District" or
+              kv["name:en"] == "North Caucasian Federal District" or
+              kv["name:en"] == "Volga Federal District" then
+         kv["name"] = "Russia"
+         kv["name:en"] = "Russia"
+         kv["iso_code"] = "RU"
        end
      end
 
@@ -191,10 +265,12 @@ function rels_proc (kv, nokeys)
      end
 
      if kv["admin_level"] == "2" then
-       if kv["ISO3166-1:alpha2"] then
-         kv["iso_code"] = kv["ISO3166-1:alpha2"]
-       elseif kv["ISO3166-1"] then
-         kv["iso_code"] = kv["ISO3166-1"]
+       if kv["iso_code"] == nil then
+         if kv["ISO3166-1:alpha2"] then
+           kv["iso_code"] = kv["ISO3166-1:alpha2"]
+         elseif kv["ISO3166-1"] then
+           kv["iso_code"] = kv["ISO3166-1"]
+         end
        end
        if kv["name"] == "British Sovereign Base Areas" and kv["iso_code"] == nil then
          kv["iso_code"] = "GB"
