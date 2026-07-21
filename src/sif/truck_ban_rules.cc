@@ -4,6 +4,7 @@
 #include "baldr/graphreader.h"
 #include "sif/truck_ban_cache.h"
 #include "sif/truck_ban_holidays.h"
+#include "sif/truck_ban_schedules.h"
 
 #include <shared_mutex>
 #include <string>
@@ -16,18 +17,12 @@ namespace sif {
 namespace truck_ban {
 namespace {
 
-constexpr uint8_t kSunday = 0;
-constexpr uint8_t kSaturday = 6;
-
 uint32_t ResolveTzIndex(uint32_t tz_index, const char* country_iso) {
   if (tz_index != 0 && DateTime::get_tz_db().from_index(tz_index) != nullptr) {
     return tz_index;
   }
-  if (country_iso[0] == 'A' && country_iso[1] == 'T') {
-    return static_cast<uint32_t>(DateTime::get_tz_db().to_index("Europe/Vienna"));
-  }
-  if (country_iso[0] == 'D' && country_iso[1] == 'E') {
-    return static_cast<uint32_t>(DateTime::get_tz_db().to_index("Europe/Berlin"));
+  if (const CountryRules* rules = FindCountryRules(country_iso)) {
+    return static_cast<uint32_t>(DateTime::get_tz_db().to_index(rules->tz_name));
   }
   return tz_index;
 }
@@ -126,73 +121,82 @@ bool IsHoliday(const char* country_iso, int ymd) {
   return false;
 }
 
-bool IsMotorwayOrTrunk(RoadClass road_class) {
+bool ScopeMatches(BanScope scope, RoadClass road_class) {
+  if (scope == BanScope::kAllRoads) {
+    return true;
+  }
   return road_class == RoadClass::kMotorway || road_class == RoadClass::kTrunk;
 }
 
-bool AustriaAllRoadBan(const LocalBanTime& local) {
+bool WindowActive(const TimeWindow& window, const LocalBanTime& local) {
+  return InMinutes(local.hour, local.minute, window.start_hour, window.start_minute,
+                   window.end_hour, window.end_minute);
+}
+
+bool MonthInRange(uint8_t month, uint8_t start_month, uint8_t end_month) {
+  if (start_month <= end_month) {
+    return month >= start_month && month <= end_month;
+  }
+  // Wrap-around ranges (e.g. Nov–Mar) for future rules.
+  return month >= start_month || month <= end_month;
+}
+
+bool IsBannedByRules(const CountryRules& rules,
+                     const char* country_iso,
+                     const LocalBanTime& local,
+                     RoadClass road_class) {
   if (local.year == 0) {
     return false;
   }
 
-  // Saturday 15:00-24:00
-  if (local.weekday == kSaturday && InMinutes(local.hour, local.minute, 15, 0, 24, 0)) {
-    return true;
+  const uint8_t weekday_bit = WeekdayBit(static_cast<uint8_t>(local.weekday));
+
+  for (size_t i = 0; i < rules.weekly_count; ++i) {
+    const WeeklyRule& rule = rules.weekly[i];
+    if ((rule.weekdays_mask & weekday_bit) == 0) {
+      continue;
+    }
+    if (!ScopeMatches(rule.scope, road_class)) {
+      continue;
+    }
+    if (WindowActive(rule.window, local)) {
+      return true;
+    }
   }
 
-  // Sunday 00:00-22:00
-  if (local.weekday == kSunday && InMinutes(local.hour, local.minute, 0, 0, 22, 0)) {
-    return true;
+  if (IsHoliday(country_iso, local.ymd)) {
+    for (size_t i = 0; i < rules.holiday_count; ++i) {
+      const HolidayRule& rule = rules.holiday[i];
+      if (!ScopeMatches(rule.scope, road_class)) {
+        continue;
+      }
+      if (WindowActive(rule.window, local)) {
+        return true;
+      }
+    }
   }
 
-  // Public holidays 00:00-22:00
-  if (IsHoliday("AT", local.ymd) && InMinutes(local.hour, local.minute, 0, 0, 22, 0)) {
-    return true;
-  }
-
-  // Night ban every day 22:00-05:00
-  if (InMinutes(local.hour, local.minute, 22, 0, 5, 0)) {
-    return true;
-  }
-
-  return false;
-}
-
-bool GermanyAllRoadBan(const LocalBanTime& local) {
-  if (local.year == 0) {
-    return false;
-  }
-
-  // Sunday 00:00-22:00
-  if (local.weekday == kSunday && InMinutes(local.hour, local.minute, 0, 0, 22, 0)) {
-    return true;
-  }
-
-  // Public holidays 00:00-22:00
-  if (IsHoliday("DE", local.ymd) && InMinutes(local.hour, local.minute, 0, 0, 22, 0)) {
-    return true;
-  }
-
-  return false;
-}
-
-bool GermanyMotorwayBan(const LocalBanTime& local, RoadClass road_class) {
-  if (local.year == 0 || !IsMotorwayOrTrunk(road_class)) {
-    return false;
-  }
-
-  // July-August Saturday 07:00-20:00 on motorways and trunk roads
-  if ((local.month == 7 || local.month == 8) && local.weekday == kSaturday &&
-      InMinutes(local.hour, local.minute, 7, 0, 20, 0)) {
-    return true;
+  for (size_t i = 0; i < rules.seasonal_count; ++i) {
+    const SeasonalRule& rule = rules.seasonal[i];
+    if (!MonthInRange(static_cast<uint8_t>(local.month), rule.start_month, rule.end_month)) {
+      continue;
+    }
+    if ((rule.weekdays_mask & weekday_bit) == 0) {
+      continue;
+    }
+    if (!ScopeMatches(rule.scope, road_class)) {
+      continue;
+    }
+    if (WindowActive(rule.window, local)) {
+      return true;
+    }
   }
 
   return false;
 }
 
 bool IsBanCountry(const char* country_iso) {
-  return (country_iso[0] == 'A' && country_iso[1] == 'T') ||
-         (country_iso[0] == 'D' && country_iso[1] == 'E');
+  return FindCountryRules(country_iso) != nullptr;
 }
 
 bool EvaluateBanRules(const char* country_iso, const LocalBanTime& local, RoadClass road_class) {
@@ -200,20 +204,13 @@ bool EvaluateBanRules(const char* country_iso, const LocalBanTime& local, RoadCl
     return true;
   }
 
-  if (country_iso[0] == 'A' && country_iso[1] == 'T' && AustriaAllRoadBan(local)) {
-    return false;
+  const CountryRules* rules = FindCountryRules(country_iso);
+  if (rules == nullptr) {
+    return true;
   }
 
-  if (country_iso[0] == 'D' && country_iso[1] == 'E') {
-    if (GermanyAllRoadBan(local)) {
-      return false;
-    }
-    if (GermanyMotorwayBan(local, road_class)) {
-      return false;
-    }
-  }
-
-  return true;
+  // Ban active ⇒ edge not allowed.
+  return !IsBannedByRules(*rules, country_iso, local, road_class);
 }
 
 bool CachedBanAllowed(const char* country_iso,
@@ -276,7 +273,12 @@ bool EvaluateTraverseAllowed(const baldr::GraphId& from_node,
     }
 
     const std::string country = admin->country_iso();
-    if (country.size() < 2 || !IsBanCountry(country.data())) {
+    if (country.size() < 2) {
+      return true;
+    }
+
+    const CountryRules* rules = FindCountryRules(country.data());
+    if (rules == nullptr || weight_metric_tons < rules->min_weight_tons) {
       return true;
     }
 
@@ -329,11 +331,12 @@ bool IsEdgeAllowed(const std::string& country_iso,
                    uint32_t tz_index,
                    float weight_metric_tons,
                    RoadClass road_class) {
-  if (current_time == 0 || weight_metric_tons < kMinGrossWeightMetricTons) {
+  if (current_time == 0 || country_iso.size() < 2) {
     return true;
   }
 
-  if (country_iso.size() < 2 || !IsBanCountry(country_iso.data())) {
+  const CountryRules* rules = FindCountryRules(country_iso.data());
+  if (rules == nullptr || weight_metric_tons < rules->min_weight_tons) {
     return true;
   }
 
@@ -349,7 +352,13 @@ bool IsTraverseAllowed(const baldr::GraphId& from_node,
                        uint64_t arrive_time,
                        float weight_metric_tons,
                        RoadClass road_class) {
-  if ((depart_time == 0 && arrive_time == 0) || weight_metric_tons < kMinGrossWeightMetricTons) {
+  if (depart_time == 0 && arrive_time == 0) {
+    return true;
+  }
+
+  // Absolute floor: nothing below the lightest Tier A threshold is ever banned.
+  // Per-country thresholds are applied inside EvaluateTraverseAllowed.
+  if (weight_metric_tons < 3.5f) {
     return true;
   }
 

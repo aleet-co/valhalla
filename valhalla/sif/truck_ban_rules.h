@@ -16,7 +16,8 @@ class GraphReader;
 namespace sif {
 namespace truck_ban {
 
-// Vehicles above 7.5 t gross weight (metric tons).
+// Default EU HGV threshold (AT/DE). Per-country thresholds live in
+// truck_ban_schedules.h (e.g. CH/LI use 3.5 t).
 constexpr float kMinGrossWeightMetricTons = 7.5f;
 
 /**
