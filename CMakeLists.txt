@@ -330,7 +330,7 @@ endif()
 ## Valhalla programs
 set(valhalla_programs
     valhalla_export_edges valhalla_export_ban_graph valhalla_build_cch
-    valhalla_build_region_grid
+    valhalla_build_region_grid valhalla_export_matrix_presence
     valhalla_expand_bounding_box valhalla_service)
 
 ## Valhalla data tools

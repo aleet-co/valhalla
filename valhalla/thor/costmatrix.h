@@ -105,6 +105,33 @@ public:
     return MatrixAlgoToString(Matrix::CostMatrix);
   }
 
+  /** Per-country occupancy along the best CostMatrix path for one OD pair. */
+  struct CountryPresence {
+    std::string iso;
+    float tin_s = 0.f;
+    float tout_s = 0.f;
+  };
+
+  /**
+   * After a successful SourceToTarget, reconstruct the best path for one OD
+   * and return merged (country, tin, tout) presence intervals in seconds from
+   * the origin. Empty if unreachable or path cannot be formed.
+   */
+  std::vector<CountryPresence> FormCountryPresence(baldr::GraphReader& graphreader,
+                                                   Api& request,
+                                                   uint32_t source_idx,
+                                                   uint32_t target_idx);
+
+  /** Best-connection cost seconds for OD (or a sentinel if unreachable). */
+  float BestTimeSeconds(uint32_t source_idx, uint32_t target_idx) const;
+  uint32_t BestDistanceMeters(uint32_t source_idx, uint32_t target_idx) const;
+  uint32_t SourceCount() const {
+    return locs_count_[MATRIX_FORW];
+  }
+  uint32_t TargetCount() const {
+    return locs_count_[MATRIX_REV];
+  }
+
 protected:
   uint32_t max_reserved_labels_count_;
   uint32_t max_reserved_locations_count_;

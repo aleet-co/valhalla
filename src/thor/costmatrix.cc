@@ -1,4 +1,5 @@
 #include "thor/costmatrix.h"
+#include "baldr/admin.h"
 #include "baldr/datetime.h"
 #include "exceptions.h"
 #include "midgard/encoded.h"
@@ -1384,6 +1385,130 @@ std::string CostMatrix::RecostFormPath(GraphReader& graphreader,
 
   // encode to 6 precision for geojson as well, which the serializer expects
   return encode<decltype(points)>(points, request.options().shape_format() != polyline5 ? 1e6 : 1e5);
+}
+
+float CostMatrix::BestTimeSeconds(uint32_t source_idx, uint32_t target_idx) const {
+  const uint32_t idx = source_idx * locs_count_[MATRIX_REV] + target_idx;
+  if (idx >= best_connection_.size()) {
+    return kMaxCost;
+  }
+  return best_connection_[idx].cost.secs;
+}
+
+uint32_t CostMatrix::BestDistanceMeters(uint32_t source_idx, uint32_t target_idx) const {
+  const uint32_t idx = source_idx * locs_count_[MATRIX_REV] + target_idx;
+  if (idx >= best_connection_.size()) {
+    return static_cast<uint32_t>(kMaxCost);
+  }
+  return best_connection_[idx].distance;
+}
+
+std::vector<CostMatrix::CountryPresence>
+CostMatrix::FormCountryPresence(GraphReader& graphreader,
+                                Api& request,
+                                uint32_t source_idx,
+                                uint32_t target_idx) {
+  std::vector<CountryPresence> out;
+  const uint32_t connection_idx = source_idx * locs_count_[MATRIX_REV] + target_idx;
+  if (connection_idx >= best_connection_.size()) {
+    return out;
+  }
+  BestCandidate& connection = best_connection_[connection_idx];
+  if (connection.distance == static_cast<uint32_t>(kMaxCost) || connection.cost.secs >= kMaxCost) {
+    return out;
+  }
+
+  // Reconstruct path edges (same structure as RecostFormPath).
+  uint32_t connedge_idx1 = edgestatus_[MATRIX_FORW][source_idx].Get(connection.edgeid).index();
+  uint32_t connedge_idx2 = edgestatus_[MATRIX_REV][target_idx].Get(connection.opp_edgeid).index();
+
+  std::vector<GraphId> path_edges;
+  graph_tile_ptr tile;
+  for (auto edgelabel_index = connedge_idx1; edgelabel_index != kInvalidLabel;
+       edgelabel_index = edgelabel_[MATRIX_FORW][source_idx][edgelabel_index].predecessor()) {
+    const BDEdgeLabel& edgelabel = edgelabel_[MATRIX_FORW][source_idx][edgelabel_index];
+    const DirectedEdge* edge = graphreader.directededge(edgelabel.edgeid(), tile);
+    if (edge == nullptr) {
+      return {};
+    }
+    if (edge->is_shortcut()) {
+      auto superseded = graphreader.RecoverShortcut(edgelabel.edgeid());
+      std::move(superseded.rbegin(), superseded.rend(), std::back_inserter(path_edges));
+    } else {
+      path_edges.push_back(edgelabel.edgeid());
+    }
+  }
+  std::reverse(path_edges.begin(), path_edges.end());
+
+  auto& target_edgelabels = edgelabel_[MATRIX_REV][target_idx];
+  for (auto edgelabel_index = target_edgelabels[connedge_idx2].predecessor();
+       edgelabel_index != kInvalidLabel;
+       edgelabel_index = target_edgelabels[edgelabel_index].predecessor()) {
+    const BDEdgeLabel& edgelabel = target_edgelabels[edgelabel_index];
+    const DirectedEdge* opp_edge = nullptr;
+    GraphId opp_edge_id = graphreader.GetOpposingEdgeId(edgelabel.edgeid(), opp_edge, tile);
+    if (opp_edge == nullptr) {
+      return {};
+    }
+    if (opp_edge->is_shortcut()) {
+      auto superseded = graphreader.RecoverShortcut(opp_edge_id);
+      std::move(superseded.begin(), superseded.end(), std::back_inserter(path_edges));
+    } else {
+      path_edges.emplace_back(std::move(opp_edge_id));
+    }
+  }
+
+  if (path_edges.empty() || costing_ == nullptr) {
+    return out;
+  }
+
+  // Walk edges, accumulate seconds, track country of each edge's end node.
+  float elapsed = 0.f;
+  std::string cur_iso;
+  float cur_tin = 0.f;
+  auto flush = [&](float tout) {
+    if (!cur_iso.empty() && tout >= cur_tin) {
+      if (!out.empty() && out.back().iso == cur_iso) {
+        out.back().tout_s = tout;
+      } else {
+        out.push_back(CountryPresence{cur_iso, cur_tin, tout});
+      }
+    }
+  };
+
+  for (size_t i = 0; i < path_edges.size(); ++i) {
+    const DirectedEdge* de = graphreader.directededge(path_edges[i], tile);
+    if (de == nullptr) {
+      return {};
+    }
+    // Edge time from costing (static; bans off without date_time).
+    auto ec = costing_->EdgeCost(de, path_edges[i], tile);
+    elapsed += ec.secs;
+
+    GraphId end = de->endnode();
+    auto node_tile = graphreader.GetGraphTile(end);
+    if (node_tile == nullptr) {
+      continue;
+    }
+    const NodeInfo* ni = node_tile->node(end);
+    const Admin* admin = node_tile->admin(ni->admin_index());
+    std::string iso = "XX";
+    if (admin != nullptr) {
+      iso = admin->country_iso();
+      if (iso.size() < 2) {
+        iso = "XX";
+      } else {
+        iso = iso.substr(0, 2);
+      }
+    }
+    if (iso != cur_iso) {
+      flush(elapsed - ec.secs); // leave previous country at entry of this edge
+      cur_iso = iso;
+      cur_tin = elapsed - ec.secs;
+    }
+  }
+  flush(elapsed);
+  return out;
 }
 
 template <const MatrixExpansionType expansion_direction, const bool FORWARD>
