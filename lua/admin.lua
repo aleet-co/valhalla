@@ -128,8 +128,12 @@ end
 -- We save admins as 2(country) or 4(state/prov).
 -- Geofabrik Europe extracts omit overseas / Asian members of some admin_level=2
 -- "empire" relations, so valhalla_build_admins marks them degenerate and skips them
--- (ES/NL/NO/RU historically missing). Mirror the France workaround: drop the broken
--- level-2 relation and promote a mainland-complete stand-in with a hard-coded ISO.
+-- (ES/NL/NO/RU historically missing). Mirror the France workaround:
+--   ES  → Europe/Madrid timezone
+--   NL  → legal "Europees Nederland" (+ land level-3 backup)
+--   NO  → mainland Norge boundary (no admin_level)
+--   RU  → promote ISO3166-2=RU-* federal subjects to country (Moscow TZ is cut)
+-- and skip missing relation members in adminbuilder so near-complete polygons can form.
 function rels_proc (kv, nokeys)
 
   if (kv["type"] == "boundary" and kv["default_language"] and
@@ -165,8 +169,8 @@ function rels_proc (kv, nokeys)
      return 0, kv
   end
 
-  -- Netherlands: legal "Europees Nederland" polygon (Kingdom level-2 + land level-3
-  -- both still tend to miss Caribbean members / fail geometry on Europe extracts).
+  -- Netherlands: legal "Europees Nederland" (r12728888) is mainland-complete in the
+  -- Geofabrik Europe extract (unlike Kingdom level-2 / land level-3 which miss members).
   if kv["type"] == "boundary" and kv["boundary"] == "legal" and
      (kv["name:en"] == "European Netherlands" or kv["name"] == "Europees Nederland" or
       kv["timezone"] == "Europe/Amsterdam") then
@@ -175,22 +179,6 @@ function rels_proc (kv, nokeys)
      kv["iso_code"] = "NL"
      kv["name"] = "Netherlands"
      kv["name:en"] = "Netherlands"
-     kv["drive_on_right"] = "true"
-     kv["allow_intersection_names"] = "false"
-     for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
-     return 0, kv
-  end
-
-  -- Russia: Europe/Moscow timezone covers most of European Russia (full RU level-2
-  -- and federal districts are incomplete in Geofabrik Europe extracts).
-  if kv["type"] == "boundary" and kv["boundary"] == "timezone" and
-     (kv["timezone"] == "Europe/Moscow" or kv["name:en"] == "Moscow Time" or
-      kv["name"] == "Московское время") then
-     kv["boundary"] = "administrative"
-     kv["admin_level"] = "2"
-     kv["iso_code"] = "RU"
-     kv["name"] = "Russia"
-     kv["name:en"] = "Russia"
      kv["drive_on_right"] = "true"
      kv["allow_intersection_names"] = "false"
      for _, k in ipairs({ 'FIXME', 'note', 'source' }) do kv[k] = nil end
@@ -226,14 +214,8 @@ function rels_proc (kv, nokeys)
           kv["name"] == "Terres australes et antarctiques françaises" or
           kv["name:en"] == "Metropolitan France" or
           kv["name:en"] == "Hong Kong" or kv["name"] == "Metro Manila" or
-          -- European Netherlands (land) inside the Kingdom relation
-          kv["name:en"] == "Netherlands" or kv["name"] == "Nederland" or
-          -- European Russia federal districts (full RU level-2 is not in Europe extract)
-          kv["name:en"] == "Central Federal District" or
-          kv["name:en"] == "Northwestern Federal District" or
-          kv["name:en"] == "Southern Federal District" or
-          kv["name:en"] == "North Caucasian Federal District" or
-          kv["name:en"] == "Volga Federal District"
+          -- European Netherlands (land) inside the Kingdom relation (backup if legal stand-in fails)
+          kv["name:en"] == "Netherlands" or kv["name"] == "Nederland"
         if not keep_l3 then
           return 1, kv
         end
@@ -281,19 +263,21 @@ function rels_proc (kv, nokeys)
          kv["name"] = "Netherlands"
          kv["name:en"] = "Netherlands"
          kv["iso_code"] = "NL"
-       elseif kv["name:en"] == "Central Federal District" or
-              kv["name:en"] == "Northwestern Federal District" or
-              kv["name:en"] == "Southern Federal District" or
-              kv["name:en"] == "North Caucasian Federal District" or
-              kv["name:en"] == "Volga Federal District" then
-         kv["name"] = "Russia"
-         kv["name:en"] = "Russia"
-         kv["iso_code"] = "RU"
        end
      end
 
      if kv["admin_level"] == "6" then
        kv["admin_level"] = "4"
+     end
+
+     -- Geofabrik Europe cuts the RU empire / Moscow TZ so they never form usable rings.
+     -- Promote each Russian federal subject (ISO3166-2=RU-*) to a country polygon instead;
+     -- multiple RU rows are expected and enough for country_iso assignment + the ISO gate.
+     if kv["admin_level"] == "4" and kv["ISO3166-2"] and string.sub(kv["ISO3166-2"], 1, 3) == "RU-" then
+       kv["admin_level"] = "2"
+       kv["iso_code"] = "RU"
+       kv["name"] = "Russia"
+       kv["name:en"] = "Russia"
      end
 
      if kv["admin_level"] == "2" then
