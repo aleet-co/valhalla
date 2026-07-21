@@ -206,7 +206,8 @@ int main(int argc, char* argv[]) {
   thor_worker_t::adjust_locations(request);
 
   CostFactory factory;
-  TravelMode mode;
+  // Qualify — proto also defines valhalla::TravelMode.
+  valhalla::sif::TravelMode mode;
   auto mode_costing = factory.CreateModeCosting(request.options(), mode);
   LOG_INFO("valhalla_export_matrix_presence: CostMatrix SourceToTarget…");
   matrix.SourceToTarget(request, reader, mode_costing, mode, max_distance);
