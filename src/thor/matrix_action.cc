@@ -1,3 +1,4 @@
+#include "midgard/logging.h"
 #include "thor/worker.h"
 #include "tyr/serializers.h"
 
@@ -176,6 +177,31 @@ std::string thor_worker_t::matrix(Api& request) {
     // add a warning that we needed to open destonly etc
     add_warning(request, 400, get_unfound_indices(request.matrix().second_pass()));
   };
+
+  // Optional country presence (CostMatrix path reconstruction). Must run while
+  // CostMatrix still holds connection / edge-label state — before any Clear().
+  if (options.include_country_presence()) {
+    if (algo != &costmatrix_) {
+      LOG_WARN("include_country_presence ignored: algorithm is not CostMatrix");
+    } else {
+      const int nsrc = options.sources_size();
+      const int ntgt = options.targets_size();
+      auto* matrix = request.mutable_matrix();
+      matrix->mutable_country_presence()->Clear();
+      matrix->mutable_country_presence()->Reserve(nsrc * ntgt);
+      for (int si = 0; si < nsrc; ++si) {
+        for (int ti = 0; ti < ntgt; ++ti) {
+          auto* cell = matrix->add_country_presence();
+          for (const auto& seg : costmatrix_.FormCountryPresence(*reader, request, si, ti)) {
+            auto* out = cell->add_segments();
+            out->set_country(seg.iso);
+            out->set_tin_s(seg.tin_s);
+            out->set_tout_s(seg.tout_s);
+          }
+        }
+      }
+    }
+  }
 
   return tyr::serializeMatrix(request);
 }

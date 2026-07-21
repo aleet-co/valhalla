@@ -554,4 +554,5 @@ message Options {
   repeated Levels exclude_levels = 65;                             // Levels to exclude within the exclude_polygon at the same index
   uint32 expansion_max_distance = 66;                              // Maximum path distance in meters for expansion. 0 = disabled.
   MatrixAlgorithm matrix_algorithm = 67;                           // per-request matrix algorithm selection
+  bool include_country_presence = 68;                              // CostMatrix: attach per-OD country tin/tout segments
 }

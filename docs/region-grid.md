@@ -71,6 +71,17 @@ valhalla_build_region_grid -c /custom_files/valhalla.json \
 
 Pin downstream jobs to `tile_build_hash` in the meta file so a tile rebuild forces a grid rebuild.
 
+## Visualize
+
+From the module root (needs matplotlib; for CSV→polygons also `h3>=4`):
+
+```bash
+poetry run python scripts/visualize_region_grid.py --dir /path/to/region_grid
+# writes regions_map.png + medoids_map.png next to regions.csv (or --out-dir …)
+```
+
+If `regions.geojson` is absent, polygons are reconstructed from the `h3` column in `regions.csv`.
+
 ## Algorithm (summary)
 
 1. `BuildTruckGraph` (optional HGV filter) from tiles  

@@ -207,11 +207,30 @@ void serialize_row(const valhalla::Matrix& matrix,
           }
         }
       }
+      // Country presence segments (CostMatrix + include_country_presence).
+      if (static_cast<int>(i) < matrix.country_presence_size()) {
+        const auto& cell = matrix.country_presence(i);
+        writer.start_array("segments");
+        for (const auto& seg : cell.segments()) {
+          writer.start_object();
+          writer("country", seg.country());
+          writer.set_precision(1);
+          writer("tin_s", seg.tin_s());
+          writer("tout_s", seg.tout_s());
+          writer.set_precision(tyr::kDefaultPrecision);
+          writer.end_object();
+        }
+        writer.end_array();
+      }
     } else {
       writer("from_index", source_index);
       writer("to_index", target_index + (i - start_td));
       writer("time", nullptr);
       writer("distance", nullptr);
+      if (static_cast<int>(i) < matrix.country_presence_size()) {
+        writer.start_array("segments");
+        writer.end_array();
+      }
     }
     writer.end_object();
   }

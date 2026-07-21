@@ -3,6 +3,16 @@ option optimize_for = LITE_RUNTIME;
 package valhalla;
 import public "common.proto";
 
+message CountryPresenceSegment {
+  string country = 1;   // ISO-3166 alpha-2
+  float tin_s = 2;      // seconds from departure when entering country
+  float tout_s = 3;     // seconds from departure when leaving country
+}
+
+message CountryPresenceCell {
+  repeated CountryPresenceSegment segments = 1;
+}
+
 message Matrix {
   enum Algorithm {
     TimeDistanceMatrix = 0;
@@ -26,4 +36,6 @@ message Matrix {
   repeated double begin_lon = 15;
   repeated double end_lat = 16;
   repeated double end_lon = 17;
+  // Parallel to times[] when Options.include_country_presence is set (CostMatrix only).
+  repeated CountryPresenceCell country_presence = 18;
 }

@@ -1024,6 +1024,14 @@ void from_json(rapidjson::Document& doc, Options::Action action, Api& api) {
     }
   }
 
+  // CostMatrix-only: reconstruct per-OD country occupancy (tin/tout) for truck bans.
+  options.set_include_country_presence(
+      rapidjson::get<bool>(doc, "/include_country_presence", options.include_country_presence()));
+  if (options.include_country_presence()) {
+    // Presence is only emitted on the verbose sources_to_targets cell list.
+    options.set_verbose(true);
+  }
+
   // Throw an error if use_timestamps is set to true but there are no timestamps in the
   // trace (or no durations present)
   if (options.use_timestamps()) {
