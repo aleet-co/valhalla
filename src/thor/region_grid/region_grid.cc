@@ -6,6 +6,7 @@
 
 #include "midgard/logging.h"
 
+#include <limits>
 #include <unordered_map>
 
 namespace valhalla {
@@ -56,11 +57,14 @@ RegionGridResult BuildRegionGrid(const cch::CchGraph& graph, const RegionGridOpt
   for (const auto& a : result.node_regions) {
     if (a.region_id < result.regions.size())
       ++result.regions[a.region_id].node_count;
+    else if (a.region_id == std::numeric_limits<uint32_t>::max())
+      ++result.unassigned_nodes;
   }
 
   LOG_INFO("region_grid: build complete  regions=" + std::to_string(result.regions.size()) +
            " nodes=" + std::to_string(graph.nodes.size()) +
-           " fallback=" + std::to_string(result.euclidean_fallback_count));
+           " fallback=" + std::to_string(result.euclidean_fallback_count) +
+           " unassigned=" + std::to_string(result.unassigned_nodes));
   return result;
 }
 

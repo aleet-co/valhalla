@@ -14,10 +14,12 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace valhalla;
 
@@ -32,6 +34,21 @@ std::set<uint32_t> parse_levels(const std::string& s) {
       levels.insert(static_cast<uint32_t>(std::stoul(tok)));
   }
   return levels;
+}
+
+std::vector<std::string> parse_csv_tokens(const std::string& s) {
+  std::vector<std::string> out;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    // trim spaces
+    size_t b = tok.find_first_not_of(" \t");
+    if (b == std::string::npos)
+      continue;
+    size_t e = tok.find_last_not_of(" \t");
+    out.push_back(tok.substr(b, e - b + 1));
+  }
+  return out;
 }
 
 uint32_t resolve_concurrency(uint32_t concurrency) {
@@ -62,7 +79,10 @@ void write_node_regions_csv(const std::filesystem::path& path,
                             const thor::region_grid::RegionGridResult& result) {
   std::ofstream out(path);
   out << "graph_id,region_id,time_to_rep_s\n";
+  constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
   for (size_t i = 0; i < graph.nodes.size() && i < result.node_regions.size(); ++i) {
+    if (result.node_regions[i].region_id == kUnassigned)
+      continue;
     out << graph.nodes[i].graph_id << ',' << result.node_regions[i].region_id << ','
         << result.node_regions[i].time_to_rep_s << '\n';
   }
@@ -86,8 +106,18 @@ void write_meta_json(const std::filesystem::path& path,
   out << "  \"nodes\": " << graph.nodes.size() << ",\n";
   out << "  \"edges\": " << graph.edges.size() << ",\n";
   out << "  \"euclidean_fallback_nodes\": " << result.euclidean_fallback_count << ",\n";
+  out << "  \"unassigned_nodes\": " << result.unassigned_nodes << ",\n";
   out << "  \"base_h3_res\": " << options.base_h3_res << ",\n";
   out << "  \"max_h3_res\": " << options.max_h3_res << ",\n";
+  out << "  \"dense_max_h3_res\": " << options.dense_max_h3_res << ",\n";
+  out << "  \"dense_density_factor\": " << options.dense_density_factor << ",\n";
+  out << "  \"exclude_countries\": [";
+  for (size_t i = 0; i < options.exclude_countries.size(); ++i) {
+    if (i)
+      out << ", ";
+    out << "\"" << options.exclude_countries[i] << "\"";
+  }
+  out << "],\n";
   out << "  \"tool\": \"valhalla_build_region_grid\",\n";
   out << "  \"version\": \"" << VALHALLA_PRINT_VERSION << "\"\n";
   out << "}\n";
@@ -128,10 +158,14 @@ void write_geojson(const std::filesystem::path& path,
 int main(int argc, char* argv[]) {
   const auto program = std::filesystem::path(__FILE__).stem().string();
   boost::property_tree::ptree config;
-  std::string out_dir, levels_str;
+  std::string out_dir, levels_str, exclude_countries_str;
   uint32_t max_class = 6;
   uint32_t concurrency = 0;
-  uint32_t target_regions = 10000;
+  uint32_t target_regions = 6000;
+  int base_h3_res = 5;
+  int max_h3_res = 6;
+  int dense_max_h3_res = 5;
+  double dense_density_factor = 1.5;
   bool hgv_only = true;
   bool write_geojson_flag = false;
 
@@ -153,8 +187,21 @@ int main(int argc, char* argv[]) {
         cxxopts::value<uint32_t>(max_class)->default_value("6"))
       ("hgv-only", "Only include truck-accessible edges.",
         cxxopts::value<bool>(hgv_only)->default_value("true"))
-      ("target-regions", "Target number of regions across Europe.",
-        cxxopts::value<uint32_t>(target_regions)->default_value("10000"))
+      ("target-regions", "Target number of regions (excludes dropped countries).",
+        cxxopts::value<uint32_t>(target_regions)->default_value("6000"))
+      ("base-h3-res", "Initial H3 resolution before merge/split.",
+        cxxopts::value<int>(base_h3_res)->default_value("5"))
+      ("max-h3-res", "Hard cap on H3 resolution for any cell.",
+        cxxopts::value<int>(max_h3_res)->default_value("6"))
+      ("dense-max-h3-res",
+        "Cap H3 refinement for dense (high weight/km²) cells; sparse cells may use max-h3-res.",
+        cxxopts::value<int>(dense_max_h3_res)->default_value("5"))
+      ("dense-density-factor",
+        "Cell is dense when weight/km² ≥ factor × country mean density.",
+        cxxopts::value<double>(dense_density_factor)->default_value("1.5"))
+      ("exclude-countries",
+        "Comma-separated ISO2 codes to drop (empty = keep all). Default RU,BY.",
+        cxxopts::value<std::string>(exclude_countries_str)->default_value("RU,BY"))
       ("j,concurrency", "Worker threads for subgraph load (0=hardware_concurrency).",
         cxxopts::value<uint32_t>(concurrency)->default_value("0"))
       ("write-geojson", "Also write regions.geojson for QA.",
@@ -178,9 +225,19 @@ int main(int argc, char* argv[]) {
     return std::chrono::duration<double>(clock::now() - t0).count();
   };
 
+  thor::region_grid::RegionGridOptions grid_opts;
+  grid_opts.target_regions = target_regions;
+  grid_opts.base_h3_res = base_h3_res;
+  grid_opts.max_h3_res = max_h3_res;
+  grid_opts.dense_max_h3_res = dense_max_h3_res;
+  grid_opts.dense_density_factor = dense_density_factor;
+  grid_opts.exclude_countries = parse_csv_tokens(exclude_countries_str);
+
   LOG_INFO("valhalla_build_region_grid: levels=" + levels_str +
            " max_class=" + std::to_string(max_class) + " hgv_only=" + (hgv_only ? "1" : "0") +
-           " target=" + std::to_string(target_regions) + " out_dir=" + out_dir);
+           " target=" + std::to_string(target_regions) +
+           " dense_max_h3_res=" + std::to_string(dense_max_h3_res) +
+           " exclude=" + exclude_countries_str + " out_dir=" + out_dir);
 
   LOG_INFO("valhalla_build_region_grid: phase 1/2 Building truck subgraph...");
   const auto t1 = clock::now();
@@ -189,9 +246,6 @@ int main(int argc, char* argv[]) {
   LOG_INFO("valhalla_build_region_grid: phase 1/2 done  nodes=" +
            std::to_string(graph.nodes.size()) + " edges=" + std::to_string(graph.edges.size()) +
            " phase_s=" + std::to_string(secs(t1)));
-
-  thor::region_grid::RegionGridOptions grid_opts;
-  grid_opts.target_regions = target_regions;
 
   LOG_INFO("valhalla_build_region_grid: phase 2/2 Building region grid...");
   const auto t2 = clock::now();

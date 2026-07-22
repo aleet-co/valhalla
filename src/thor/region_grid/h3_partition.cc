@@ -20,6 +20,26 @@ namespace {
 
 constexpr uint64_t kInvalidH3 = 0;
 
+// Mean hexagon area (km²) by H3 resolution (Uber H3 docs).
+double ApproxH3AreaKm2(int res) {
+  static constexpr double kArea[] = {
+      4250546.8477000, 607220.9782429, 86745.8540347, 12392.2648621, 1770.3235517,
+      252.9033645,     36.1290521,     5.1612932,     0.7373276,     0.1053325,
+      0.0150475,       0.0021496,      0.0003071,     0.0000439,     0.0000063,
+      0.0000009};
+  if (res < 0 || res > 15)
+    return kArea[5];
+  return kArea[res];
+}
+
+bool IsExcludedCountry(const std::string& iso, const RegionGridOptions& options) {
+  for (const auto& ex : options.exclude_countries) {
+    if (iso == ex)
+      return true;
+  }
+  return false;
+}
+
 struct CountryAgg {
   uint64_t weight = 0;
   std::vector<uint32_t> nodes;
@@ -32,12 +52,15 @@ uint64_t edge_weight(const cch::CchGraph& graph, const cch::CchBaseEdge& e) {
   return e.time_s == 0 ? 1 : static_cast<uint64_t>(e.time_s);
 }
 
-std::unordered_map<std::string, CountryAgg> aggregate_by_country(const cch::CchGraph& graph) {
+std::unordered_map<std::string, CountryAgg>
+aggregate_by_country(const cch::CchGraph& graph, const RegionGridOptions& options) {
   std::unordered_map<std::string, CountryAgg> by_country;
   by_country.reserve(64);
   for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
     const auto& n = graph.nodes[i];
     std::string iso = n.country.empty() ? "XX" : n.country.substr(0, 2);
+    if (IsExcludedCountry(iso, options))
+      continue;
     by_country[iso].nodes.push_back(i);
   }
   for (const auto& e : graph.edges) {
@@ -48,6 +71,8 @@ std::unordered_map<std::string, CountryAgg> aggregate_by_country(const cch::CchG
     if (a.country != b.country)
       continue;
     std::string iso = a.country.empty() ? "XX" : a.country.substr(0, 2);
+    if (IsExcludedCountry(iso, options))
+      continue;
     by_country[iso].weight += edge_weight(graph, e);
   }
   // Ensure every country with nodes has nonzero weight for budgeting.
@@ -195,12 +220,34 @@ std::vector<CellSeed> tune_country_cells(const cch::CchGraph& graph,
     }
   }
 
-  // Too few cells: split heaviest at finer resolution.
-  while (cells.size() < target_c && res < options.max_h3_res) {
+  // Too few cells: split heaviest cell that is still allowed to refine.
+  // Dense (high weight/km²) cells stop at dense_max_h3_res; sparse cells may
+  // continue up to max_h3_res. This cuts urban micro-cell clusters.
+  std::unordered_set<uint64_t> unsplittable;
+  while (cells.size() < target_c) {
+    double total_w = 0.0;
+    double total_a = 0.0;
+    for (const auto& kv : cells) {
+      const int cres = H3Resolution(kv.first);
+      total_w += static_cast<double>(kv.second.weight);
+      total_a += ApproxH3AreaKm2(cres);
+    }
+    const double mean_density = total_w / std::max(total_a, 1e-9);
+
     uint64_t heaviest = 0;
     uint64_t heavy_w = 0;
     for (const auto& kv : cells) {
-      if (kv.second.weight > heavy_w && kv.second.nodes.size() > 1) {
+      if (unsplittable.count(kv.first) || kv.second.nodes.size() <= 1)
+        continue;
+      const int cres = H3Resolution(kv.first);
+      if (cres >= options.max_h3_res)
+        continue;
+      const double dens =
+          static_cast<double>(kv.second.weight) / ApproxH3AreaKm2(cres);
+      if (cres >= options.dense_max_h3_res &&
+          dens >= options.dense_density_factor * mean_density)
+        continue;
+      if (kv.second.weight > heavy_w) {
         heavy_w = kv.second.weight;
         heaviest = kv.first;
       }
@@ -208,20 +255,18 @@ std::vector<CellSeed> tune_country_cells(const cch::CchGraph& graph,
     if (heaviest == kInvalidH3 || heavy_w == 0)
       break;
 
+    const int child_res = H3Resolution(heaviest) + 1;
     auto src = std::move(cells[heaviest]);
     cells.erase(heaviest);
-    auto children = build_cells_at_res(graph, src.nodes, res + 1, node_weight);
+    auto children = build_cells_at_res(graph, src.nodes, child_res, node_weight);
     if (children.size() <= 1) {
-      // Could not split usefully; put back and stop.
       cells[heaviest] = std::move(src);
-      break;
+      unsplittable.insert(heaviest);
+      continue;
     }
     for (auto& ch : children)
       cells[ch.first] = std::move(ch.second);
-    ++res;
-    // Avoid runaway growth: if we already met/exceeded target, stop splitting.
-    if (cells.size() >= target_c)
-      break;
+    res = std::max(res, child_res);
   }
 
   // Final merge pass: splits (and coarse geography) can leave us above target.
@@ -335,7 +380,7 @@ std::vector<std::pair<double, double>> H3BoundaryLatLng(uint64_t h3_index) {
 }
 
 std::vector<CellSeed> PartitionH3Cells(const cch::CchGraph& graph, const RegionGridOptions& options) {
-  auto by_country = aggregate_by_country(graph);
+  auto by_country = aggregate_by_country(graph, options);
   uint64_t total_w = 0;
   for (const auto& kv : by_country)
     total_w += kv.second.weight;
@@ -351,11 +396,23 @@ std::vector<CellSeed> PartitionH3Cells(const cch::CchGraph& graph, const RegionG
     countries.push_back(kv.first);
   std::sort(countries.begin(), countries.end());
 
+  if (!options.exclude_countries.empty()) {
+    std::string ex;
+    for (size_t i = 0; i < options.exclude_countries.size(); ++i) {
+      if (i)
+        ex += ",";
+      ex += options.exclude_countries[i];
+    }
+    LOG_INFO("region_grid: excluding countries=" + ex);
+  }
+
   uint32_t assigned = 0;
   const auto t_part = std::chrono::steady_clock::now();
   auto last_part_log = t_part;
   LOG_INFO("region_grid: partition start  countries=" + std::to_string(countries.size()) +
-           " target=" + std::to_string(options.target_regions));
+           " target=" + std::to_string(options.target_regions) +
+           " dense_max_h3_res=" + std::to_string(options.dense_max_h3_res) +
+           " max_h3_res=" + std::to_string(options.max_h3_res));
   for (size_t i = 0; i < countries.size(); ++i) {
     const auto& iso = countries[i];
     const auto& agg = by_country[iso];

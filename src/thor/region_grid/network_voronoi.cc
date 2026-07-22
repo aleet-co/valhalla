@@ -144,14 +144,17 @@ VoronoiResult ComputeNetworkVoronoi(const cch::CchGraph& graph,
             best_rid = medoid_region_ids[mi];
           }
         }
-      } else if (!medoid_region_ids.empty()) {
-        best_rid = medoid_region_ids[0];
+      }
+      // No same-country medoid (excluded country or empty ISO): leave unassigned
+      // rather than attaching to a foreign region's medoid.
+      if (best_d == std::numeric_limits<double>::infinity()) {
+        result.node_regions[i].region_id = std::numeric_limits<uint32_t>::max();
+        result.node_regions[i].time_to_rep_s = 0;
+        continue;
       }
       result.node_regions[i].region_id = best_rid;
       result.node_regions[i].time_to_rep_s =
-          best_d == std::numeric_limits<double>::infinity()
-              ? 0
-              : static_cast<uint32_t>(std::llround(best_d / 20.0)); // ~20 m/s proxy
+          static_cast<uint32_t>(std::llround(best_d / 20.0)); // ~20 m/s proxy
     }
 
     if (((i + 1) & 4095u) == 0 || i + 1 == n) {

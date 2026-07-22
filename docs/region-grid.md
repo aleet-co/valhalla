@@ -1,6 +1,6 @@
 # Truck region grid (`valhalla_build_region_grid`)
 
-Offline tool that partitions the Europe truck subgraph into ~10 000 country-clipped
+Offline tool that partitions the Europe truck subgraph into ~6 000 country-clipped
 H3 regions, picks a network medoid per region, and assigns every truck-graph node
 to a region via in-country network Voronoi ownership.
 
@@ -30,7 +30,9 @@ cmake --build build --target valhalla_build_region_grid -j
 ```bash
 valhalla_build_region_grid -c /custom_files/valhalla.json \
   --out-dir /custom_files/region_grid \
-  --target-regions 10000 \
+  --target-regions 6000 \
+  --dense-max-h3-res 5 \
+  --exclude-countries RU,BY \
   --levels 0,1 \
   --max-class 6 \
   --hgv-only \
@@ -42,7 +44,7 @@ valhalla_build_region_grid -c /custom_files/valhalla.json \
 ```bash
 ./build/valhalla_build_region_grid -c /custom_files/valhalla.json \
   --out-dir /data/region_grid \
-  --target-regions 10000 \
+  --target-regions 6000 \
   --levels 0,1 \
   --max-class 6 \
   --hgv-only \
@@ -56,7 +58,12 @@ valhalla_build_region_grid -c /custom_files/valhalla.json \
 | `--levels` | `0,1` | Hierarchy levels (highway + arterial) |
 | `--max-class` | `6` | Max OSM road class kept |
 | `--hgv-only` | `true` | Keep only `kTruckAccess` edges |
-| `--target-regions` | `10000` | Soft target cell count after merge/split |
+| `--target-regions` | `6000` | Soft target cell count after merge/split |
+| `--base-h3-res` | `5` | Seed H3 resolution |
+| `--max-h3-res` | `6` | Hard cap for any cell |
+| `--dense-max-h3-res` | `5` | Cap refinement for dense (high weight/km²) cells |
+| `--dense-density-factor` | `1.5` | Dense if weight/km² ≥ factor × country mean |
+| `--exclude-countries` | `RU,BY` | ISO2 codes dropped from the grid (empty = keep all) |
 | `--concurrency` / `-j` | hardware | Tile load threads |
 | `--write-geojson` | `false` | Also emit `regions.geojson` for QGIS |
 
@@ -65,8 +72,8 @@ valhalla_build_region_grid -c /custom_files/valhalla.json \
 | File | Contents |
 |------|----------|
 | `regions.csv` | `region_id,country,h3,rep_graph_id,rep_lat,rep_lon,node_count` |
-| `node_regions.csv` | `graph_id,region_id,time_to_rep_s` for every truck node |
-| `region_grid_meta.json` | `tile_build_hash`, levels, counts, tool version |
+| `node_regions.csv` | `graph_id,region_id,time_to_rep_s` for every assigned truck node |
+| `region_grid_meta.json` | `tile_build_hash`, levels, counts, exclude list, tool version |
 | `regions.geojson` | Optional H3 cell polygons |
 
 Pin downstream jobs to `tile_build_hash` in the meta file so a tile rebuild forces a grid rebuild.
@@ -85,10 +92,11 @@ If `regions.geojson` is absent, polygons are reconstructed from the `h3` column 
 ## Algorithm (summary)
 
 1. `BuildTruckGraph` (optional HGV filter) from tiles  
-2. Weight countries by in-country truck edge time; allocate cell budgets  
+2. Drop excluded countries (default RU/BY); weight remaining countries by in-country truck edge time; allocate cell budgets  
 3. H3 partition at base res 5, merge/split toward each country’s budget  
-4. Network medoid per cell (sampled Dijkstra on cell + 1-ring halo)  
-5. Multi-source Dijkstra Voronoi, **no cross-country ownership transfer**
+4. Dense-area split cap: cells with high weight/km² stop refining at `dense_max_h3_res` (sparse cells may reach `max_h3_res`)  
+5. Network medoid per cell (sampled Dijkstra on cell + 1-ring halo)  
+6. Multi-source Dijkstra Voronoi, **no cross-country ownership transfer** (excluded-country nodes stay unassigned)
 
 ## Tests
 
