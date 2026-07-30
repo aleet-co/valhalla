@@ -186,7 +186,7 @@ int main(int argc, char* argv[]) {
       ("max-class", "Max RoadClass to include (0=motorway .. 7=service).",
         cxxopts::value<uint32_t>(max_class)->default_value("6"))
       ("hgv-only", "Only include truck-accessible edges.",
-        cxxopts::value<bool>(hgv_only)->default_value("true"))
+        cxxopts::value<bool>(hgv_only)->default_value("true")->implicit_value("true"))
       ("target-regions", "Target number of regions (excludes dropped countries).",
         cxxopts::value<uint32_t>(target_regions)->default_value("6000"))
       ("base-h3-res", "Initial H3 resolution before merge/split.",
@@ -205,7 +205,7 @@ int main(int argc, char* argv[]) {
       ("j,concurrency", "Worker threads for subgraph load (0=hardware_concurrency).",
         cxxopts::value<uint32_t>(concurrency)->default_value("0"))
       ("write-geojson", "Also write regions.geojson for QA.",
-        cxxopts::value<bool>(write_geojson_flag)->default_value("false"));
+        cxxopts::value<bool>(write_geojson_flag)->default_value("false")->implicit_value("true"));
     // clang-format on
 
     auto result = options.parse(argc, argv);
