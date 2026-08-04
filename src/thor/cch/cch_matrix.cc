@@ -13,6 +13,7 @@
 #include "baldr/graphid.h"
 #include "baldr/time_info.h"
 #include "midgard/logging.h"
+#include "thor/cch/contracted_search.h"
 #include "thor/matrixalgorithm.h"
 #include "thor/pathalgorithm.h"
 
@@ -308,6 +309,53 @@ bool CCHMatrix::SourceToTarget(Api& request,
       }
     }
     depart_sow[s] = cch::utc_second_of_week(epoch);
+  }
+
+  // Stage 1 contracted query: ban-aware search on the CCH overlay (consumes
+  // shortcut B). Skip corridor unpack / hop-ball / TdRepair.
+  if (query_mode_ == cch::QueryMode::Contracted) {
+    // Phase A: union ban-free downward reach over all snapped targets.
+    std::unordered_set<uint32_t> g_down_union;
+    std::vector<uint32_t> snapped_targets;
+    snapped_targets.reserve(static_cast<size_t>(tgts.size()));
+    for (int t = 0; t < tgts.size(); ++t) {
+      if (tgt_idx[t] < 0)
+        continue;
+      const uint32_t tn = static_cast<uint32_t>(tgt_idx[t]);
+      snapped_targets.push_back(tn);
+      cch::BanFreeDownwardReach(order_, metric_, tn, g_down_union, nullptr, interrupt_);
+    }
+
+    // Phase B: per-source contracted TD earliest arrival into the union G↓.
+    for (int s = 0; s < srcs.size(); ++s) {
+      if (src_idx[s] < 0) {
+        for (int t = 0; t < tgts.size(); ++t) {
+          const size_t pbf = static_cast<size_t>(s) * tgts.size() + t;
+          matrix.mutable_from_indices()->Set(pbf, s);
+          matrix.mutable_to_indices()->Set(pbf, t);
+          matrix.mutable_times()->Set(pbf, kMaxCost);
+          matrix.mutable_distances()->Set(pbf, 0);
+        }
+        continue;
+      }
+      std::unordered_map<uint32_t, float> arrival;
+      cch::ContractedTdEarliest(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
+                                depart_sow[s], &g_down_union, arrival, interrupt_);
+      for (int t = 0; t < tgts.size(); ++t) {
+        const size_t pbf = static_cast<size_t>(s) * tgts.size() + t;
+        matrix.mutable_from_indices()->Set(pbf, s);
+        matrix.mutable_to_indices()->Set(pbf, t);
+        float secs = kMaxCost;
+        if (tgt_idx[t] >= 0) {
+          auto it = arrival.find(static_cast<uint32_t>(tgt_idx[t]));
+          if (it != arrival.end())
+            secs = it->second;
+        }
+        matrix.mutable_times()->Set(pbf, secs);
+        matrix.mutable_distances()->Set(pbf, 0);
+      }
+    }
+    return true;
   }
 
   // Downward trees are SOURCE-INDEPENDENT: a target's down-tree (and the base

@@ -162,6 +162,43 @@ TEST_F(CchMatrixTest, CchArrivalsMatchTdmWithinTolerance) {
       << matches << "/" << total << " pairs within tolerance";
 }
 
+// Same ban-free vs-TDM gate as the corridor test, but with query_mode=contracted
+// (Stage 1 single-label search on the CCH overlay). Same tolerance for Stage 1.
+TEST_F(CchMatrixTest, ContractedBanFreeMatchesTdmWithinTolerance) {
+  const std::string prev_mode = map.config.get<std::string>("thor.cch.query_mode");
+  map.config.put("thor.cch.query_mode", "contracted");
+
+  const std::vector<std::string> sources = {"L"};
+  const std::vector<std::string> targets = {"B", "C", "D", "E", "F", "G", "H", "I", "J", "K"};
+  auto run = [&](const std::string& algo) {
+    return gurka::do_action(valhalla::Options::sources_to_targets, map, sources, targets, "truck",
+                            {{"/date_time/type", "1"},
+                             {"/date_time/value", "2025-02-24T08:00"},
+                             {"/matrix_algorithm", algo}});
+  };
+  auto tdm = run("timedistancematrix");
+  auto cch = run("cch");
+
+  map.config.put("thor.cch.query_mode", prev_mode);
+
+  for (const auto& w : cch.info().warnings())
+    ASSERT_NE(w.code(), kCchFallbackWarning) << "cch fell back; correctness check is meaningless";
+
+  ASSERT_EQ(tdm.matrix().times_size(), cch.matrix().times_size());
+  const int total = tdm.matrix().times_size();
+  ASSERT_GT(total, 0);
+  int matches = 0;
+  for (int i = 0; i < total; ++i) {
+    const float a = tdm.matrix().times(i);
+    const float b = cch.matrix().times(i);
+    EXPECT_GT(b, 0.f) << "cch produced no arrival for pair " << i;
+    if (std::abs(a - b) <= std::max(1.0f, 0.02f * a))
+      ++matches;
+  }
+  EXPECT_GE(static_cast<double>(matches) / total, 0.95)
+      << matches << "/" << total << " pairs within tolerance";
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
