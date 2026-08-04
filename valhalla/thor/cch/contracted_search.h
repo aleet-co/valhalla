@@ -38,7 +38,9 @@ using RphastBuckets = std::unordered_map<uint32_t, std::vector<RphastBucketEntry
 // On success, nd = d + profiles[eid].time_s. Missing arrival keys = unsettled.
 // If buckets != nullptr, on each settled label at u also apply
 //   arrival[t] = min(arrival[t], d + down_dist) for each ban-free-safe bucket
-//   entry (t, down_dist) at u (Stage 3 RPHAST settle). nullptr buckets = Stage 1/2.
+//   entry (t, down_dist) at u (Stage 3 RPHAST settle). Bucket fills must not
+//   drive early-exit; only Dijkstra settlement of a target counts toward
+//   `found`. nullptr buckets = Stage 1/2.
 void ContractedTdEarliest(const CchOrder& order,
                           const CustomizedMetric& metric,
                           uint32_t source,

@@ -291,6 +291,51 @@ TEST(ContractedSearch, RphastBucketsOmitBannedDownEdges) {
   }
 }
 
+TEST(ContractedSearch, RphastBucketsDoNotEarlyExitSuboptimal) {
+  // Two meeting peaks: M1 is closer from S but has a long down to T; M2 is
+  // farther from S but short down. Bucket settle at M1 must not ++found and
+  // truncate before M2 (101 vs true 11).
+  //   S→M1=1, M1→T=100 → tentative 101
+  //   S→M2=10, M2→T=1  → true 11
+  constexpr uint32_t S = 0;
+  constexpr uint32_t M1 = 1;
+  constexpr uint32_t M2 = 2;
+  constexpr uint32_t T = 3;
+  CchOrder order;
+  order.num_base_edges = 4;
+  order.rank = {/*S*/ 0, /*M1*/ 2, /*M2*/ 3, /*T*/ 1};
+  order.fwd_adj.assign(4, {});
+  order.bwd_adj.assign(4, {});
+  order.fwd_adj[S].push_back({M1, 0});
+  order.fwd_adj[S].push_back({M2, 1});
+  order.bwd_adj[T].push_back({M1, 2});
+  order.bwd_adj[T].push_back({M2, 3});
+  CustomizedMetric metric;
+  metric.profiles.assign(4, {});
+  metric.profiles[0].time_s = 1;   // S→M1
+  metric.profiles[1].time_s = 10;  // S→M2
+  metric.profiles[2].time_s = 100; // M1→T
+  metric.profiles[3].time_s = 1;   // M2→T
+
+  std::unordered_set<uint32_t> down_allowed;
+  RphastBuckets buckets;
+  BuildRphastPhaseA(order, metric, {T}, down_allowed, &buckets, nullptr);
+  ASSERT_TRUE(buckets.count(M1));
+  ASSERT_TRUE(buckets.count(M2));
+  // Bucket-only settle: strip T so descent cannot reach the target.
+  down_allowed = {M1, M2};
+
+  std::unordered_map<uint32_t, float> earliest;
+  ContractedTdEarliest(order, metric, S, {T}, 0, &down_allowed, &buckets, earliest, nullptr);
+  ASSERT_TRUE(earliest.count(T));
+  EXPECT_FLOAT_EQ(earliest[T], 11.f);
+
+  std::unordered_map<uint32_t, float> pareto;
+  ContractedTdPareto(order, metric, S, {T}, 0, &down_allowed, &buckets, pareto, nullptr, nullptr);
+  ASSERT_TRUE(pareto.count(T));
+  EXPECT_FLOAT_EQ(pareto[T], 11.f);
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {

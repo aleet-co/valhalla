@@ -188,7 +188,10 @@ void ContractedTdEarliest(const CchOrder& order,
   pq.push({0.f, source});
   size_t found = 0;
   size_t n = 0;
+  std::unordered_set<uint32_t> settled_targets;
 
+  // Bucket fills may write early arrival[t] but must not drive `found` /
+  // early-exit: a later meeting node can improve the same target.
   auto apply_buckets = [&](uint32_t u, float d) {
     if (!buckets)
       return;
@@ -200,12 +203,10 @@ void ContractedTdEarliest(const CchOrder& order,
         continue;
       const float cand = d + e.down_dist;
       auto ait = arrival.find(e.target);
-      if (ait == arrival.end()) {
+      if (ait == arrival.end())
         arrival[e.target] = cand;
-        ++found;
-      } else if (cand < ait->second) {
+      else if (cand < ait->second)
         ait->second = cand;
-      }
     }
   };
 
@@ -231,9 +232,13 @@ void ContractedTdEarliest(const CchOrder& order,
     auto it = dist.find(u);
     if (it == dist.end() || d > it->second)
       continue;
-    if (want.count(u) && !arrival.count(u)) {
-      arrival[u] = d;
+    if (want.count(u) && settled_targets.insert(u).second) {
       ++found;
+      auto ait = arrival.find(u);
+      if (ait == arrival.end())
+        arrival[u] = d;
+      else if (d < ait->second)
+        ait->second = d;
     }
     apply_buckets(u, d);
     const int64_t entry = depart_sow + static_cast<int64_t>(d);
@@ -281,7 +286,10 @@ void ContractedTdPareto(const CchOrder& order,
 
   size_t found = 0;
   size_t n = 0;
+  std::unordered_set<uint32_t> settled_targets;
 
+  // Bucket fills may write early arrival[t] but must not drive `found` /
+  // early-exit: a later meeting node can improve the same target.
   auto apply_buckets = [&](uint32_t u, float d) {
     if (!buckets)
       return;
@@ -293,12 +301,10 @@ void ContractedTdPareto(const CchOrder& order,
         continue;
       const float cand = d + e.down_dist;
       auto ait = arrival.find(e.target);
-      if (ait == arrival.end()) {
+      if (ait == arrival.end())
         arrival[e.target] = cand;
-        ++found;
-      } else if (cand < ait->second) {
+      else if (cand < ait->second)
         ait->second = cand;
-      }
     }
   };
 
@@ -342,9 +348,13 @@ void ContractedTdPareto(const CchOrder& order,
     auto lit = labels[u].find(cls);
     if (lit == labels[u].end() || d > lit->second)
       continue;
-    if (want.count(u) && !arrival.count(u)) {
-      arrival[u] = d;
+    if (want.count(u) && settled_targets.insert(u).second) {
       ++found;
+      auto ait = arrival.find(u);
+      if (ait == arrival.end())
+        arrival[u] = d;
+      else if (d < ait->second)
+        ait->second = d;
     }
     apply_buckets(u, d);
     const int64_t entry = depart_sow + static_cast<int64_t>(d);
