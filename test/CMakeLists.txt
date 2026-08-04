@@ -95,6 +95,7 @@ set(tests aabb2 access_restriction actor admin attributes_controller configurati
   verbal_text_formatter_us_co verbal_text_formatter_us_tx viterbi_search compression traffictile
   incident_loading worker_nullptr_tiles curl_tilegetter filesystem_utils narrativebuilder util_odin
   truck_ban_rules cch_profile cch_order cch_customizer cch_matrix cch_contracted_search
+  cch_exact_cases
   region_grid_partition region_grid_voronoi)
 
 if(ENABLE_DATA_TOOLS)
