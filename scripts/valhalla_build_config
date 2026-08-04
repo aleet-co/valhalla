@@ -258,6 +258,7 @@ config = {
             "enabled": False,
             "artifact": "/custom_files/cch_truck.bin",
             "corridor_hops": 16,
+            "query_mode": "corridor",
         },
     },
     "odin": {
@@ -606,6 +607,7 @@ help_text = {
             "enabled": "If True, allow CCH matrix algorithm (requires a matching cch_truck.bin artifact)",
             "artifact": "Path to the offline CCH truck artifact (cch_truck.bin)",
             "corridor_hops": "Number of CCH corridor hops used when extracting paths",
+            "query_mode": "CCH query strategy: corridor (default) or contracted",
         },
     },
     "odin": {

@@ -13,6 +13,14 @@
 namespace valhalla {
 namespace thor {
 
+namespace cch {
+
+// Selects the CCH matrix query strategy. Corridor is the production default;
+// Contracted is staged behind thor.cch.query_mode for exact-query work.
+enum class QueryMode { Corridor, Contracted };
+
+} // namespace cch
+
 class CCHMatrix : public MatrixAlgorithm {
 public:
   explicit CCHMatrix(const boost::property_tree::ptree& config);
@@ -41,11 +49,16 @@ public:
     return ensure_customized(r);
   }
 
+  cch::QueryMode query_mode() const {
+    return query_mode_;
+  }
+
 private:
   bool ensure_customized(baldr::GraphReader& reader);
 
   std::string artifact_path_;
   uint32_t hops_;
+  cch::QueryMode query_mode_ = cch::QueryMode::Corridor;
   bool enabled_ = false;
   bool ready_ = false;
   // Negative-cache latch: once we've tried (and failed) to customize, don't

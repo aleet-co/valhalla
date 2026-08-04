@@ -59,6 +59,7 @@ protected:
          {"thor.cch.enabled", "true"},
          {"thor.cch.artifact", VALHALLA_BUILD_DIR "test/data/cch_matrix/cch_truck.bin"},
          {"thor.cch.corridor_hops", "16"},
+         {"thor.cch.query_mode", "corridor"},
          {"mjolnir.timezone", VALHALLA_BUILD_DIR "test/data/tz.sqlite"}});
 
     // Build the CCH artifact from the freshly built tiles and persist it where
