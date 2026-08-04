@@ -16,8 +16,8 @@ namespace thor {
 namespace cch {
 
 // Selects the CCH matrix query strategy. ContractedPareto is the production
-// default; Corridor and Contracted remain selectable via thor.cch.query_mode.
-enum class QueryMode { Corridor, Contracted, ContractedPareto };
+// default; Contracted (single-label) remains selectable via thor.cch.query_mode.
+enum class QueryMode { Contracted, ContractedPareto };
 
 } // namespace cch
 
@@ -57,7 +57,6 @@ private:
   bool ensure_customized(baldr::GraphReader& reader);
 
   std::string artifact_path_;
-  uint32_t hops_;
   cch::QueryMode query_mode_ = cch::QueryMode::ContractedPareto;
   bool enabled_ = false;
   bool ready_ = false;

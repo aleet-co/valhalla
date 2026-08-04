@@ -51,7 +51,6 @@ protected:
          {"thor.source_to_target_algorithm", "timedistancematrix"},
          {"thor.cch.enabled", "true"},
          {"thor.cch.artifact", VALHALLA_BUILD_DIR "test/data/cch_exact_oracle/cch_truck.bin"},
-         {"thor.cch.corridor_hops", "16"},
          {"thor.cch.query_mode", "contracted_pareto"},
          {"mjolnir.timezone", VALHALLA_BUILD_DIR "test/data/tz.sqlite"}});
 

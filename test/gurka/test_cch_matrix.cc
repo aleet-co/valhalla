@@ -26,7 +26,7 @@ namespace {
 // This map is placed over Portugal so nodes get a valid timezone from tz.sqlite
 // (needed for the depart-time conversion). No admin db is supplied, so no edge
 // gets a country ISO and therefore no ban ever fires -- this is deliberately a
-// BAN-FREE map, which lets us validate the CCH corridor/repair machinery against
+// BAN-FREE map, which lets us validate contracted CCH search against
 // TimeDistanceMatrix end-to-end (the ban-firing case is exercised by the
 // customizer unit tests and the offline prototypes/tch_ban benchmark).
 constexpr unsigned kCchFallbackWarning = 304u;
@@ -62,8 +62,7 @@ protected:
          {"thor.source_to_target_algorithm", "timedistancematrix"},
          {"thor.cch.enabled", "true"},
          {"thor.cch.artifact", VALHALLA_BUILD_DIR "test/data/cch_matrix/cch_truck.bin"},
-         {"thor.cch.corridor_hops", "16"},
-         {"thor.cch.query_mode", "corridor"},
+         {"thor.cch.query_mode", "contracted_pareto"},
          {"mjolnir.timezone", VALHALLA_BUILD_DIR "test/data/tz.sqlite"}});
 
     // Build the CCH artifact from the freshly built tiles and persist it where
@@ -118,9 +117,9 @@ TEST_F(CchMatrixTest, RequestingCchForNonTruckFallsBack) {
   EXPECT_TRUE(warned) << "expected 304 fallback for non-truck costing";
 }
 
-// 4. On this ban-free map, cch arrivals must match TimeDistanceMatrix arrivals
-//    within tolerance for >=95% of pairs (documents the accepted MVP tolerance
-//    and guards against corridor/repair regressions).
+// 4. Soft vs-TDM gate for default query_mode=contracted_pareto on this ban-free
+//    map (>=95% within max(1s, 2%)). The ship-gate oracle uses a tighter
+//    max(60s, 5%) / 100% bar in gurka_cch_exact_oracle.
 //
 // Geometry note: the CCH MVP snaps every source/target to the end node of its
 // first correlated edge, which resolves to the location's *west* graph-node
@@ -129,10 +128,7 @@ TEST_F(CchMatrixTest, RequestingCchForNonTruckFallsBack) {
 // source's one-node eastward-to-westward offset and each target's offset cancel,
 // so cch measures the same node pair TDM does. What remains is only the
 // per-edge integer rounding of the CCH truck-time model vs TDM's float
-// accumulation (sub-second to a couple seconds), which is exactly the
-// corridor/repair correctness signal we want to gate. (Snapping precision is a
-// documented MVP limitation; long real-world routes make the one-node offset
-// negligible -- see spec s11 / prototypes/tch_ban.)
+// accumulation (sub-second to a couple seconds).
 TEST_F(CchMatrixTest, CchArrivalsMatchTdmWithinTolerance) {
   const std::vector<std::string> sources = {"L"};
   const std::vector<std::string> targets = {"B", "C", "D", "E", "F", "G", "H", "I", "J", "K"};
@@ -156,8 +152,6 @@ TEST_F(CchMatrixTest, CchArrivalsMatchTdmWithinTolerance) {
   for (int i = 0; i < total; ++i) {
     const float a = tdm.matrix().times(i);
     const float b = cch.matrix().times(i);
-    // cch must actually produce arrivals; a 0 here would mean the target was
-    // unreachable in the corridor (a real regression), not a rounding blip.
     EXPECT_GT(b, 0.f) << "cch produced no arrival for pair " << i;
     if (std::abs(a - b) <= std::max(1.0f, 0.02f * a))
       ++matches;
@@ -166,8 +160,8 @@ TEST_F(CchMatrixTest, CchArrivalsMatchTdmWithinTolerance) {
       << matches << "/" << total << " pairs within tolerance";
 }
 
-// Same ban-free vs-TDM gate as the corridor test, but with query_mode=contracted
-// (Stage 1 single-label search on the CCH overlay). Same tolerance for Stage 1.
+// Same ban-free vs-TDM soft gate with query_mode=contracted (Stage 1
+// single-label search on the CCH overlay).
 TEST_F(CchMatrixTest, ContractedBanFreeMatchesTdmWithinTolerance) {
   const std::string prev_mode = map.config.get<std::string>("thor.cch.query_mode");
   map.config.put("thor.cch.query_mode", "contracted");

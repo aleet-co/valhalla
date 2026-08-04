@@ -17,15 +17,6 @@ TEST(CCHMatrixConfig, DefaultsToContractedPareto) {
   EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
 }
 
-TEST(CCHMatrixConfig, ParsesCorridorExplicitly) {
-  boost::property_tree::ptree pt;
-  pt.put("cch.enabled", true);
-  pt.put("cch.artifact", "/tmp/missing.bin");
-  pt.put("cch.query_mode", "corridor");
-  thor::CCHMatrix m(pt);
-  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::Corridor);
-}
-
 TEST(CCHMatrixConfig, ParsesContracted) {
   boost::property_tree::ptree pt;
   pt.put("cch.enabled", true);
@@ -44,13 +35,22 @@ TEST(CCHMatrixConfig, ParsesContractedPareto) {
   EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
 }
 
-TEST(CCHMatrixConfig, UnknownFallsBackToCorridor) {
+TEST(CCHMatrixConfig, UnknownFallsBackToContractedPareto) {
   boost::property_tree::ptree pt;
   pt.put("cch.enabled", true);
   pt.put("cch.artifact", "/tmp/missing.bin");
   pt.put("cch.query_mode", "not-a-mode");
   thor::CCHMatrix m(pt);
-  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::Corridor);
+  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
+}
+
+TEST(CCHMatrixConfig, RetiredCorridorFallsBackToContractedPareto) {
+  boost::property_tree::ptree pt;
+  pt.put("cch.enabled", true);
+  pt.put("cch.artifact", "/tmp/missing.bin");
+  pt.put("cch.query_mode", "corridor");
+  thor::CCHMatrix m(pt);
+  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
 }
 
 } // namespace
