@@ -16,8 +16,8 @@ namespace thor {
 namespace cch {
 
 // Selects the CCH matrix query strategy. Corridor is the production default;
-// Contracted is staged behind thor.cch.query_mode for exact-query work.
-enum class QueryMode { Corridor, Contracted };
+// Contracted / ContractedPareto are staged behind thor.cch.query_mode.
+enum class QueryMode { Corridor, Contracted, ContractedPareto };
 
 } // namespace cch
 

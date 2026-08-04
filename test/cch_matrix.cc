@@ -35,6 +35,15 @@ TEST(CCHMatrixConfig, ParsesContracted) {
   EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::Contracted);
 }
 
+TEST(CCHMatrixConfig, ParsesContractedPareto) {
+  boost::property_tree::ptree pt;
+  pt.put("cch.enabled", true);
+  pt.put("cch.artifact", "/tmp/missing.bin");
+  pt.put("cch.query_mode", "contracted_pareto");
+  thor::CCHMatrix m(pt);
+  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
+}
+
 TEST(CCHMatrixConfig, UnknownFallsBackToCorridor) {
   boost::property_tree::ptree pt;
   pt.put("cch.enabled", true);

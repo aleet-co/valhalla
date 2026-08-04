@@ -24,8 +24,8 @@ namespace {
 //   later arrival clears the window and reaches T.
 //
 //   Stage-1 ContractedTdEarliest keeps one label per node → settles X early,
-//   discards the late label, and never reaches T. Stage 2 Pareto-on-arrival
-//   must flip this test to EXPECT success / match the hand-computed later path.
+//   discards the late label, and never reaches T. Stage 2 ContractedTdPareto
+//   keeps both X arrivals and settles T at the hand-computed later path (1500).
 // ---------------------------------------------------------------------------
 
 TEST(CCHExactCases, NonFifoNeedsPareto) {
@@ -58,21 +58,32 @@ TEST(CCHExactCases, NonFifoNeedsPareto) {
   // late path S→A→X (1400) then X→T at entry 1400 (slot 1, feasible) → 1500.
   constexpr float kTrueArrivalT = 1500.f;
 
-  std::unordered_map<uint32_t, float> arrival;
-  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, nullptr, arrival, nullptr);
-
-  // Stage 1 RED bar: single-label search fails to settle T (or would mismatch
-  // kTrueArrivalT if it somehow settled via another path — there is none).
-  // Stage 2: replace with EXPECT_FLOAT_EQ(arrival[T], kTrueArrivalT).
-  EXPECT_TRUE(arrival.find(T) == arrival.end())
+  // Stage 1 still misses T (documents the single-label gap).
+  std::unordered_map<uint32_t, float> stage1;
+  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, nullptr, stage1, nullptr);
+  EXPECT_TRUE(stage1.find(T) == stage1.end())
       << "Stage-1 single-label must miss T; true later-path arrival would be "
       << kTrueArrivalT;
 
-  // Document that the early label wins at X (late path discarded by single-label).
   std::unordered_map<uint32_t, float> to_x;
   ContractedTdEarliest(order, metric, S, {X}, 0, nullptr, to_x, nullptr);
   ASSERT_TRUE(to_x.find(X) != to_x.end());
   EXPECT_FLOAT_EQ(to_x[X], 100.f);
+
+  // Stage 2: Pareto-on-arrival keeps the late X label and settles T at 1500.
+  std::unordered_map<uint32_t, float> arrival;
+  std::vector<uint32_t> label_counts;
+  ContractedTdPareto(order, metric, S, {T}, /*depart_sow=*/0, nullptr, arrival, &label_counts,
+                     nullptr);
+  ASSERT_TRUE(arrival.find(T) != arrival.end());
+  EXPECT_FLOAT_EQ(arrival[T], kTrueArrivalT);
+  // Label telemetry: X keeps two feasibility classes (early exit banned vs late
+  // exit clear); other nodes stay single-label on this graph.
+  ASSERT_EQ(label_counts.size(), 4u);
+  EXPECT_EQ(label_counts[S], 1u);
+  EXPECT_EQ(label_counts[A], 1u);
+  EXPECT_EQ(label_counts[X], 2u);
+  EXPECT_EQ(label_counts[T], 1u);
 }
 
 // ---------------------------------------------------------------------------

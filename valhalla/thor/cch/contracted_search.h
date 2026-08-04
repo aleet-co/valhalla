@@ -37,6 +37,29 @@ void ContractedTdEarliest(const CchOrder& order,
                           std::unordered_map<uint32_t, float>& arrival,
                           const std::function<void()>* interrupt);
 
+// Stage 2 contracted-graph TD search with Pareto-on-arrival labels.
+//
+// Same adjacency / EdgeFeasibleAt / down_allowed rules as ContractedTdEarliest.
+// Label rule (sufficient for static travel times + weekly slot bans, no waiting):
+//   Feasibility class at node u for arrival d is the bitmask of which outgoing
+//   edges (fwd_adj[u] then inverted bwd down-successors, index order) are
+//   EdgeFeasibleAt(entry) with entry = depart_sow + d. Out-degree > 64 folds
+//   bits with (i % 64). Within a class keep only the minimum arrival; keep
+//   distinct classes. Cap: at most 32 labels per node (LOG_WARN if a new class
+//   would exceed the cap and is dropped).
+// `arrival` out-param = earliest among retained Pareto labels at each settled
+// target. If label_counts_out != nullptr, resized to |rank| with the number of
+// retained labels per node (0 if never labeled).
+void ContractedTdPareto(const CchOrder& order,
+                        const CustomizedMetric& metric,
+                        uint32_t source,
+                        const std::vector<uint32_t>& targets,
+                        int64_t depart_sow,
+                        const std::unordered_set<uint32_t>* down_allowed,
+                        std::unordered_map<uint32_t, float>& arrival,
+                        std::vector<uint32_t>* label_counts_out,
+                        const std::function<void()>* interrupt);
+
 // Ban-free downward settle set from target over bwd_adj (Phase A primitive).
 // Ignores forbidden masks; distances use static time_s only.
 void BanFreeDownwardReach(const CchOrder& order,

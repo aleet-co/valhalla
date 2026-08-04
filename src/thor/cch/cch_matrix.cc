@@ -28,6 +28,8 @@ CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
   const std::string mode = config.get<std::string>("cch.query_mode", "corridor");
   if (mode == "contracted") {
     query_mode_ = cch::QueryMode::Contracted;
+  } else if (mode == "contracted_pareto") {
+    query_mode_ = cch::QueryMode::ContractedPareto;
   } else {
     query_mode_ = cch::QueryMode::Corridor;
     if (mode != "corridor") {
@@ -311,9 +313,11 @@ bool CCHMatrix::SourceToTarget(Api& request,
     depart_sow[s] = cch::utc_second_of_week(epoch);
   }
 
-  // Stage 1 contracted query: ban-aware search on the CCH overlay (consumes
+  // Contracted query modes: ban-aware search on the CCH overlay (consumes
   // shortcut B). Skip corridor unpack / hop-ball / TdRepair.
-  if (query_mode_ == cch::QueryMode::Contracted) {
+  // Contracted = Stage-1 single-label; ContractedPareto = Stage-2 Pareto labels.
+  if (query_mode_ == cch::QueryMode::Contracted ||
+      query_mode_ == cch::QueryMode::ContractedPareto) {
     // Phase A: union ban-free downward reach over all snapped targets.
     std::unordered_set<uint32_t> g_down_union;
     std::vector<uint32_t> snapped_targets;
@@ -326,7 +330,8 @@ bool CCHMatrix::SourceToTarget(Api& request,
       cch::BanFreeDownwardReach(order_, metric_, tn, g_down_union, nullptr, interrupt_);
     }
 
-    // Phase B: per-source contracted TD earliest arrival into the union G↓.
+    // Phase B: per-source contracted TD search into the union G↓.
+    const bool pareto = query_mode_ == cch::QueryMode::ContractedPareto;
     for (int s = 0; s < srcs.size(); ++s) {
       if (src_idx[s] < 0) {
         for (int t = 0; t < tgts.size(); ++t) {
@@ -339,8 +344,14 @@ bool CCHMatrix::SourceToTarget(Api& request,
         continue;
       }
       std::unordered_map<uint32_t, float> arrival;
-      cch::ContractedTdEarliest(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
-                                depart_sow[s], &g_down_union, arrival, interrupt_);
+      if (pareto) {
+        cch::ContractedTdPareto(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
+                                depart_sow[s], &g_down_union, arrival, nullptr, interrupt_);
+      } else {
+        cch::ContractedTdEarliest(order_, metric_, static_cast<uint32_t>(src_idx[s]),
+                                  snapped_targets, depart_sow[s], &g_down_union, arrival,
+                                  interrupt_);
+      }
       for (int t = 0; t < tgts.size(); ++t) {
         const size_t pbf = static_cast<size_t>(s) * tgts.size() + t;
         matrix.mutable_from_indices()->Set(pbf, s);
