@@ -8,13 +8,13 @@ using namespace valhalla;
 
 namespace {
 
-TEST(CCHMatrixConfig, DefaultsToCorridor) {
+TEST(CCHMatrixConfig, DefaultsToContractedPareto) {
   boost::property_tree::ptree pt;
   pt.put("cch.enabled", true);
   pt.put("cch.artifact", "/tmp/missing.bin");
   // omit query_mode
   thor::CCHMatrix m(pt);
-  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::Corridor);
+  EXPECT_EQ(m.query_mode(), thor::cch::QueryMode::ContractedPareto);
 }
 
 TEST(CCHMatrixConfig, ParsesCorridorExplicitly) {

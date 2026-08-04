@@ -52,10 +52,11 @@ CustomizedMetric Customize(const CchGraph& g, const CchOrder& order,
   // since a shortcut is built only after its children exist).
   //
   // NOTE: the composed shortcut `B` (forbidden) mask is an algebra invariant
-  // (guarded by ShortcutProfileMatchesComposition) and is consumed by
-  // query_mode=contracted (ContractedTdEarliest / EdgeFeasibleAt). Corridor mode
-  // (design C) still ignores shortcut `B`: its CH up/down search runs on static
-  // `time_s` only, and the base-graph TdRepair pass is the sole ban authority.
+  // (guarded by ShortcutProfileMatchesComposition) and is consumed by the
+  // default query_mode=contracted_pareto (and by contracted single-label) via
+  // EdgeFeasibleAt. Corridor mode (design C) still ignores shortcut `B`: its
+  // CH up/down search runs on static `time_s` only, and the base-graph
+  // TdRepair pass is the sole ban authority.
   for (uint32_t si = 0; si < order.shortcuts.size(); ++si) {
     const auto& sc = order.shortcuts[si];
     metric.profiles[order.num_base_edges + si] =

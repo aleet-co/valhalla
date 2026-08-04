@@ -25,16 +25,17 @@ CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
       artifact_path_(config.get<std::string>("cch.artifact", "/custom_files/cch_truck.bin")),
       hops_(config.get<uint32_t>("cch.corridor_hops", 16)),
       enabled_(config.get<bool>("cch.enabled", false)) {
-  const std::string mode = config.get<std::string>("cch.query_mode", "corridor");
+  const std::string mode = config.get<std::string>("cch.query_mode", "contracted_pareto");
   if (mode == "contracted") {
     query_mode_ = cch::QueryMode::Contracted;
   } else if (mode == "contracted_pareto") {
     query_mode_ = cch::QueryMode::ContractedPareto;
-  } else {
+  } else if (mode == "corridor") {
     query_mode_ = cch::QueryMode::Corridor;
-    if (mode != "corridor") {
-      LOG_WARN("cch: unknown query_mode '" + mode + "'; defaulting to corridor");
-    }
+  } else {
+    // Unknown strings keep the legacy corridor path so typos stay comparable.
+    query_mode_ = cch::QueryMode::Corridor;
+    LOG_WARN("cch: unknown query_mode '" + mode + "'; defaulting to corridor");
   }
 }
 
