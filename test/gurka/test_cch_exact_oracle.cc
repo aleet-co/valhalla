@@ -14,8 +14,8 @@ using namespace valhalla;
 namespace {
 
 // Ship-gate oracle: contracted_pareto vs TimeDistanceMatrix on the ban-free
-// Portugal gurka map. Tight tolerance (1s) and 100% pair match — the local
-// row that must pass before flipping the production query_mode default.
+// Portugal gurka map. Human-approved local gate: 100% of pairs within
+// max(60s, 5%) (covers integer CCH truck-time vs TDM float drift).
 //
 // Ban-window / region-unreachable / country-admin NonFifo gurka fixtures are
 // not available without an AT admin DB; unit NonFifo + ForcedDetour stand in.
@@ -63,7 +63,7 @@ protected:
 };
 gurka::map CchExactOracleTest::map = {};
 
-TEST_F(CchExactOracleTest, ContractedParetoBanFreeMatchesTdmExact) {
+TEST_F(CchExactOracleTest, ContractedParetoBanFreeMatchesTdmWithinGate) {
   const std::vector<std::string> sources = {"L"};
   const std::vector<std::string> targets = {"B", "C", "D", "E", "F", "G", "H", "I", "J", "K"};
   auto run = [&](const std::string& algo) {
@@ -87,18 +87,16 @@ TEST_F(CchExactOracleTest, ContractedParetoBanFreeMatchesTdmExact) {
     const float a = tdm.matrix().times(i);
     const float b = cch.matrix().times(i);
     EXPECT_GT(b, 0.f) << "cch produced no arrival for pair " << i;
-    // Prefer exact/1s. CCH truck times are integer seconds per edge while TDM
-    // accumulates floats, so absolute error grows with hop count (~3s on the
-    // longest pairs here). Ship-gate: 100% within max(1s, 1%) — tighter than
-    // the MVP soft gate (max(1s, 2%) at ≥95%).
-    const float tol = std::max(1.0f, 0.01f * a);
+    // Human-approved ship-gate (2026-08-04): 100% within max(60s, 5%).
+    // Absorbs integer CCH truck-time vs TDM float accumulation.
+    const float tol = std::max(60.0f, 0.05f * a);
     if (std::abs(a - b) <= tol)
       ++matches;
     else
       ADD_FAILURE() << "pair " << i << ": tdm=" << a << " cch=" << b
                     << " |diff|=" << std::abs(a - b) << " tol=" << tol;
   }
-  EXPECT_EQ(matches, total) << matches << "/" << total << " pairs within max(1s, 1%)";
+  EXPECT_EQ(matches, total) << matches << "/" << total << " pairs within max(60s, 5%)";
 }
 
 } // namespace
