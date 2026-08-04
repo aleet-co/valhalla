@@ -46,7 +46,7 @@ TEST(ContractedSearch, ShortcutBanBlocksTraversal) {
 
   const int64_t sow_slot0 = 0; // slot 0
   std::unordered_map<uint32_t, float> arrival;
-  ContractedTdEarliest(order, metric, A, {C}, sow_slot0, nullptr, arrival, nullptr);
+  ContractedTdEarliest(order, metric, A, {C}, sow_slot0, nullptr, nullptr, arrival, nullptr);
   EXPECT_TRUE(arrival.find(C) == arrival.end());
 }
 
@@ -57,7 +57,7 @@ TEST(ContractedSearch, FeasibleShortcutSettlesTarget) {
 
   const int64_t sow_slot0 = 0;
   std::unordered_map<uint32_t, float> arrival;
-  ContractedTdEarliest(order, metric, A, {C}, sow_slot0, nullptr, arrival, nullptr);
+  ContractedTdEarliest(order, metric, A, {C}, sow_slot0, nullptr, nullptr, arrival, nullptr);
   ASSERT_TRUE(arrival.find(C) != arrival.end());
   EXPECT_FLOAT_EQ(arrival[C], 100.f);
 }
@@ -143,20 +143,152 @@ TEST(ContractedSearch, DownAllowedRestrictsDescent) {
 
   std::unordered_map<uint32_t, float> arrival_blocked;
   std::unordered_set<uint32_t> empty_down;
-  ContractedTdEarliest(order, metric, nA, {nT}, 0, &empty_down, arrival_blocked, nullptr);
+  ContractedTdEarliest(order, metric, nA, {nT}, 0, &empty_down, nullptr, arrival_blocked, nullptr);
   EXPECT_TRUE(arrival_blocked.find(nT) == arrival_blocked.end());
 
   std::unordered_map<uint32_t, float> arrival_ok;
   std::unordered_set<uint32_t> allow_T{nT};
-  ContractedTdEarliest(order, metric, nA, {nT}, 0, &allow_T, arrival_ok, nullptr);
+  ContractedTdEarliest(order, metric, nA, {nT}, 0, &allow_T, nullptr, arrival_ok, nullptr);
   ASSERT_TRUE(arrival_ok.find(nT) != arrival_ok.end());
   EXPECT_FLOAT_EQ(arrival_ok[nT], 10.f);
 
   // nullptr = unrestricted down
   std::unordered_map<uint32_t, float> arrival_unrestricted;
-  ContractedTdEarliest(order, metric, nA, {nT}, 0, nullptr, arrival_unrestricted, nullptr);
+  ContractedTdEarliest(order, metric, nA, {nT}, 0, nullptr, nullptr, arrival_unrestricted, nullptr);
   ASSERT_TRUE(arrival_unrestricted.find(nT) != arrival_unrestricted.end());
   EXPECT_FLOAT_EQ(arrival_unrestricted[nT], 10.f);
+}
+
+// Stage 3: multi-target up→down DAG. S→M up; M→T0 and M→T1 down (ban-free).
+void BuildMultiTargetDownDag(CchOrder& order, CustomizedMetric& metric) {
+  constexpr uint32_t S = 0;
+  constexpr uint32_t M = 1;
+  constexpr uint32_t T0 = 2;
+  constexpr uint32_t T1 = 3;
+  order.num_base_edges = 3;
+  order.rank = {/*S*/ 0, /*M*/ 3, /*T0*/ 1, /*T1*/ 2};
+  order.fwd_adj.assign(4, {});
+  order.bwd_adj.assign(4, {});
+  order.fwd_adj[S].push_back({M, 0});
+  order.bwd_adj[T0].push_back({M, 1});
+  order.bwd_adj[T1].push_back({M, 2});
+  metric.profiles.assign(3, {});
+  metric.profiles[0].time_s = 10; // S→M
+  metric.profiles[1].time_s = 5;  // M→T0
+  metric.profiles[2].time_s = 7;  // M→T1
+}
+
+TEST(ContractedSearch, RphastPhaseAFillsBanFreeBuckets) {
+  CchOrder order;
+  CustomizedMetric metric;
+  BuildMultiTargetDownDag(order, metric);
+  constexpr uint32_t M = 1;
+  constexpr uint32_t T0 = 2;
+  constexpr uint32_t T1 = 3;
+
+  std::unordered_set<uint32_t> down_allowed;
+  RphastBuckets buckets;
+  BuildRphastPhaseA(order, metric, {T0, T1}, down_allowed, &buckets, nullptr);
+
+  EXPECT_TRUE(down_allowed.count(M));
+  EXPECT_TRUE(down_allowed.count(T0));
+  EXPECT_TRUE(down_allowed.count(T1));
+  ASSERT_TRUE(buckets.count(M));
+  // Meeting node M must bucket both targets with static down distances.
+  bool saw_t0 = false, saw_t1 = false;
+  for (const auto& e : buckets[M]) {
+    if (e.target == T0) {
+      saw_t0 = true;
+      EXPECT_FLOAT_EQ(e.down_dist, 5.f);
+    }
+    if (e.target == T1) {
+      saw_t1 = true;
+      EXPECT_FLOAT_EQ(e.down_dist, 7.f);
+    }
+  }
+  EXPECT_TRUE(saw_t0);
+  EXPECT_TRUE(saw_t1);
+}
+
+TEST(ContractedSearch, RphastBucketSettlesWithoutDownWalk) {
+  // down_allowed marks only M (not T): Stage-2 cannot descend to T, but Stage-3
+  // bucket settle at M must still report T.
+  CchOrder order;
+  CustomizedMetric metric;
+  BuildMultiTargetDownDag(order, metric);
+  constexpr uint32_t S = 0;
+  constexpr uint32_t M = 1;
+  constexpr uint32_t T0 = 2;
+
+  std::unordered_set<uint32_t> down_allowed;
+  RphastBuckets buckets;
+  BuildRphastPhaseA(order, metric, {T0}, down_allowed, &buckets, nullptr);
+  // Strip T0 so descent alone cannot settle the target.
+  down_allowed = {M};
+
+  std::unordered_map<uint32_t, float> stage2;
+  ContractedTdPareto(order, metric, S, {T0}, 0, &down_allowed, nullptr, stage2, nullptr, nullptr);
+  EXPECT_TRUE(stage2.find(T0) == stage2.end());
+
+  std::unordered_map<uint32_t, float> stage3;
+  ContractedTdPareto(order, metric, S, {T0}, 0, &down_allowed, &buckets, stage3, nullptr, nullptr);
+  ASSERT_TRUE(stage3.find(T0) != stage3.end());
+  EXPECT_FLOAT_EQ(stage3[T0], 15.f); // 10 + 5
+}
+
+TEST(ContractedSearch, RphastBucketsMatchUnbucketedPareto) {
+  CchOrder order;
+  CustomizedMetric metric;
+  BuildMultiTargetDownDag(order, metric);
+  constexpr uint32_t S = 0;
+  constexpr uint32_t T0 = 2;
+  constexpr uint32_t T1 = 3;
+
+  std::unordered_set<uint32_t> down_allowed;
+  RphastBuckets buckets;
+  BuildRphastPhaseA(order, metric, {T0, T1}, down_allowed, &buckets, nullptr);
+
+  std::unordered_map<uint32_t, float> stage2;
+  ContractedTdPareto(order, metric, S, {T0, T1}, 0, &down_allowed, nullptr, stage2, nullptr,
+                     nullptr);
+  std::unordered_map<uint32_t, float> stage3;
+  ContractedTdPareto(order, metric, S, {T0, T1}, 0, &down_allowed, &buckets, stage3, nullptr,
+                     nullptr);
+
+  ASSERT_EQ(stage2.size(), stage3.size());
+  for (const auto& [node, d2] : stage2) {
+    ASSERT_TRUE(stage3.count(node));
+    EXPECT_NEAR(stage3[node], d2, 1e-3f);
+  }
+}
+
+TEST(ContractedSearch, RphastBucketsOmitBannedDownEdges) {
+  // M→T banned: Phase A still marks M in down_allowed, but must NOT put a
+  // ban-free bucket at M for T (static addition would under-estimate).
+  constexpr uint32_t S = 0;
+  constexpr uint32_t M = 1;
+  constexpr uint32_t T = 2;
+  CchOrder order;
+  order.num_base_edges = 2;
+  order.rank = {0, 2, 1};
+  order.fwd_adj.assign(3, {});
+  order.bwd_adj.assign(3, {});
+  order.fwd_adj[S].push_back({M, 0});
+  order.bwd_adj[T].push_back({M, 1});
+  CustomizedMetric metric;
+  metric.profiles.assign(2, {});
+  metric.profiles[0].time_s = 10;
+  metric.profiles[1].time_s = 10;
+  set_slot(metric.profiles[1].forbidden, 0);
+
+  std::unordered_set<uint32_t> down_allowed;
+  RphastBuckets buckets;
+  BuildRphastPhaseA(order, metric, {T}, down_allowed, &buckets, nullptr);
+  EXPECT_TRUE(down_allowed.count(M));
+  if (buckets.count(M)) {
+    for (const auto& e : buckets[M])
+      EXPECT_NE(e.target, T) << "banned down path must not enter buckets";
+  }
 }
 
 } // namespace

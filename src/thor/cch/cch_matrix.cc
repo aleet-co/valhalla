@@ -318,19 +318,19 @@ bool CCHMatrix::SourceToTarget(Api& request,
   // Contracted = Stage-1 single-label; ContractedPareto = Stage-2 Pareto labels.
   if (query_mode_ == cch::QueryMode::Contracted ||
       query_mode_ == cch::QueryMode::ContractedPareto) {
-    // Phase A: union ban-free downward reach over all snapped targets.
+    // Phase A once: union G↓ + ban-free-safe RPHAST buckets across all targets.
     std::unordered_set<uint32_t> g_down_union;
+    cch::RphastBuckets buckets;
     std::vector<uint32_t> snapped_targets;
     snapped_targets.reserve(static_cast<size_t>(tgts.size()));
     for (int t = 0; t < tgts.size(); ++t) {
       if (tgt_idx[t] < 0)
         continue;
-      const uint32_t tn = static_cast<uint32_t>(tgt_idx[t]);
-      snapped_targets.push_back(tn);
-      cch::BanFreeDownwardReach(order_, metric_, tn, g_down_union, nullptr, interrupt_);
+      snapped_targets.push_back(static_cast<uint32_t>(tgt_idx[t]));
     }
+    cch::BuildRphastPhaseA(order_, metric_, snapped_targets, g_down_union, &buckets, interrupt_);
 
-    // Phase B: per-source contracted TD search into the union G↓.
+    // Phase B: per-source contracted TD search into the union G↓ with buckets.
     const bool pareto = query_mode_ == cch::QueryMode::ContractedPareto;
     for (int s = 0; s < srcs.size(); ++s) {
       if (src_idx[s] < 0) {
@@ -346,10 +346,11 @@ bool CCHMatrix::SourceToTarget(Api& request,
       std::unordered_map<uint32_t, float> arrival;
       if (pareto) {
         cch::ContractedTdPareto(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
-                                depart_sow[s], &g_down_union, arrival, nullptr, interrupt_);
+                                depart_sow[s], &g_down_union, &buckets, arrival, nullptr,
+                                interrupt_);
       } else {
         cch::ContractedTdEarliest(order_, metric_, static_cast<uint32_t>(src_idx[s]),
-                                  snapped_targets, depart_sow[s], &g_down_union, arrival,
+                                  snapped_targets, depart_sow[s], &g_down_union, &buckets, arrival,
                                   interrupt_);
       }
       for (int t = 0; t < tgts.size(); ++t) {

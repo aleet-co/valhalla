@@ -45,6 +45,39 @@ uint64_t FeasibilityClass(uint32_t u,
   return mask;
 }
 
+// parent[u] = {next_toward_target, eid}; empty forbidden along u→…→target.
+bool DownPathBanFree(uint32_t u,
+                     uint32_t target,
+                     const std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>>& parent,
+                     const CustomizedMetric& metric) {
+  if (u == target)
+    return true;
+  uint32_t cur = u;
+  while (cur != target) {
+    auto it = parent.find(cur);
+    if (it == parent.end())
+      return false;
+    const uint32_t eid = it->second.second;
+    if (eid >= metric.profiles.size() || !empty(metric.profiles[eid].forbidden))
+      return false;
+    cur = it->second.first;
+  }
+  return true;
+}
+
+// Invert bwd_adj: for each (pred,eid) in bwd_adj[v], pred→v is a down edge.
+std::vector<std::vector<std::pair<uint32_t, uint32_t>>> BuildDownAdj(const CchOrder& order) {
+  const uint32_t nnodes = static_cast<uint32_t>(order.rank.size());
+  std::vector<std::vector<std::pair<uint32_t, uint32_t>>> down_adj(nnodes);
+  for (uint32_t v = 0; v < order.bwd_adj.size() && v < nnodes; ++v) {
+    for (auto [pred, eid] : order.bwd_adj[v]) {
+      if (pred < nnodes)
+        down_adj[pred].push_back({v, eid});
+    }
+  }
+  return down_adj;
+}
+
 } // namespace
 
 bool EdgeFeasibleAt(const Profile& p, int64_t entry_sow) {
@@ -87,24 +120,65 @@ void BanFreeDownwardReach(const CchOrder& order,
     *down_dist_out = std::move(dist);
 }
 
+void BuildRphastPhaseA(const CchOrder& order,
+                       const CustomizedMetric& metric,
+                       const std::vector<uint32_t>& targets,
+                       std::unordered_set<uint32_t>& down_allowed,
+                       RphastBuckets* buckets,
+                       const std::function<void()>* interrupt) {
+  using QItem = std::pair<float, uint32_t>;
+  for (uint32_t target : targets) {
+    std::priority_queue<QItem, std::vector<QItem>, std::greater<>> pq;
+    std::unordered_map<uint32_t, float> dist;
+    // parent[ancestor] = {next_toward_target, eid}
+    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> parent;
+    dist[target] = 0.f;
+    pq.push({0.f, target});
+    size_t n = 0;
+    while (!pq.empty()) {
+      if (interrupt && (n++ % kInterruptIterationsInterval) == 0)
+        (*interrupt)();
+      auto [d, u] = pq.top();
+      pq.pop();
+      auto it = dist.find(u);
+      if (it == dist.end() || d > it->second)
+        continue;
+      down_allowed.insert(u);
+      if (u >= order.bwd_adj.size())
+        continue;
+      for (auto [v, eid] : order.bwd_adj[u]) {
+        if (eid >= metric.profiles.size())
+          continue;
+        float nd = d + metric.profiles[eid].time_s;
+        auto vit = dist.find(v);
+        if (vit == dist.end() || nd < vit->second) {
+          dist[v] = nd;
+          parent[v] = {u, eid};
+          pq.push({nd, v});
+        }
+      }
+    }
+    if (!buckets)
+      continue;
+    for (const auto& [u, dd] : dist) {
+      if (!DownPathBanFree(u, target, parent, metric))
+        continue;
+      (*buckets)[u].push_back(RphastBucketEntry{target, dd});
+    }
+  }
+}
+
 void ContractedTdEarliest(const CchOrder& order,
                           const CustomizedMetric& metric,
                           uint32_t source,
                           const std::vector<uint32_t>& targets,
                           int64_t depart_sow,
                           const std::unordered_set<uint32_t>* down_allowed,
+                          const RphastBuckets* buckets,
                           std::unordered_map<uint32_t, float>& arrival,
                           const std::function<void()>* interrupt) {
   const uint32_t nnodes = static_cast<uint32_t>(order.rank.size());
-
-  // Invert bwd_adj: for each (pred,eid) in bwd_adj[v], pred→v is a down edge.
-  std::vector<std::vector<std::pair<uint32_t, uint32_t>>> down_adj(nnodes);
-  for (uint32_t v = 0; v < order.bwd_adj.size() && v < nnodes; ++v) {
-    for (auto [pred, eid] : order.bwd_adj[v]) {
-      if (pred < nnodes)
-        down_adj[pred].push_back({v, eid});
-    }
-  }
+  auto down_adj = BuildDownAdj(order);
 
   using QItem = std::pair<float, uint32_t>;
   std::priority_queue<QItem, std::vector<QItem>, std::greater<>> pq;
@@ -114,6 +188,26 @@ void ContractedTdEarliest(const CchOrder& order,
   pq.push({0.f, source});
   size_t found = 0;
   size_t n = 0;
+
+  auto apply_buckets = [&](uint32_t u, float d) {
+    if (!buckets)
+      return;
+    auto bit = buckets->find(u);
+    if (bit == buckets->end())
+      return;
+    for (const auto& e : bit->second) {
+      if (!want.count(e.target))
+        continue;
+      const float cand = d + e.down_dist;
+      auto ait = arrival.find(e.target);
+      if (ait == arrival.end()) {
+        arrival[e.target] = cand;
+        ++found;
+      } else if (cand < ait->second) {
+        ait->second = cand;
+      }
+    }
+  };
 
   auto relax = [&](uint32_t v, uint32_t eid, float d, int64_t entry) {
     if (eid >= metric.profiles.size())
@@ -141,6 +235,7 @@ void ContractedTdEarliest(const CchOrder& order,
       arrival[u] = d;
       ++found;
     }
+    apply_buckets(u, d);
     const int64_t entry = depart_sow + static_cast<int64_t>(d);
 
     // Upward edges: always allowed.
@@ -166,18 +261,12 @@ void ContractedTdPareto(const CchOrder& order,
                         const std::vector<uint32_t>& targets,
                         int64_t depart_sow,
                         const std::unordered_set<uint32_t>* down_allowed,
+                        const RphastBuckets* buckets,
                         std::unordered_map<uint32_t, float>& arrival,
                         std::vector<uint32_t>* label_counts_out,
                         const std::function<void()>* interrupt) {
   const uint32_t nnodes = static_cast<uint32_t>(order.rank.size());
-
-  std::vector<std::vector<std::pair<uint32_t, uint32_t>>> down_adj(nnodes);
-  for (uint32_t v = 0; v < order.bwd_adj.size() && v < nnodes; ++v) {
-    for (auto [pred, eid] : order.bwd_adj[v]) {
-      if (pred < nnodes)
-        down_adj[pred].push_back({v, eid});
-    }
-  }
+  auto down_adj = BuildDownAdj(order);
 
   // Per-node: feas_class → best arrival for that class.
   std::vector<std::unordered_map<uint64_t, float>> labels(nnodes);
@@ -192,6 +281,26 @@ void ContractedTdPareto(const CchOrder& order,
 
   size_t found = 0;
   size_t n = 0;
+
+  auto apply_buckets = [&](uint32_t u, float d) {
+    if (!buckets)
+      return;
+    auto bit = buckets->find(u);
+    if (bit == buckets->end())
+      return;
+    for (const auto& e : bit->second) {
+      if (!want.count(e.target))
+        continue;
+      const float cand = d + e.down_dist;
+      auto ait = arrival.find(e.target);
+      if (ait == arrival.end()) {
+        arrival[e.target] = cand;
+        ++found;
+      } else if (cand < ait->second) {
+        ait->second = cand;
+      }
+    }
+  };
 
   auto try_insert = [&](uint32_t v, float nd) {
     if (v >= nnodes)
@@ -237,6 +346,7 @@ void ContractedTdPareto(const CchOrder& order,
       arrival[u] = d;
       ++found;
     }
+    apply_buckets(u, d);
     const int64_t entry = depart_sow + static_cast<int64_t>(d);
 
     if (u < order.fwd_adj.size()) {

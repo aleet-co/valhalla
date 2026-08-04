@@ -60,21 +60,21 @@ TEST(CCHExactCases, NonFifoNeedsPareto) {
 
   // Stage 1 still misses T (documents the single-label gap).
   std::unordered_map<uint32_t, float> stage1;
-  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, nullptr, stage1, nullptr);
+  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, nullptr, nullptr, stage1, nullptr);
   EXPECT_TRUE(stage1.find(T) == stage1.end())
       << "Stage-1 single-label must miss T; true later-path arrival would be "
       << kTrueArrivalT;
 
   std::unordered_map<uint32_t, float> to_x;
-  ContractedTdEarliest(order, metric, S, {X}, 0, nullptr, to_x, nullptr);
+  ContractedTdEarliest(order, metric, S, {X}, 0, nullptr, nullptr, to_x, nullptr);
   ASSERT_TRUE(to_x.find(X) != to_x.end());
   EXPECT_FLOAT_EQ(to_x[X], 100.f);
 
   // Stage 2: Pareto-on-arrival keeps the late X label and settles T at 1500.
   std::unordered_map<uint32_t, float> arrival;
   std::vector<uint32_t> label_counts;
-  ContractedTdPareto(order, metric, S, {T}, /*depart_sow=*/0, nullptr, arrival, &label_counts,
-                     nullptr);
+  ContractedTdPareto(order, metric, S, {T}, /*depart_sow=*/0, nullptr, nullptr, arrival,
+                     &label_counts, nullptr);
   ASSERT_TRUE(arrival.find(T) != arrival.end());
   EXPECT_FLOAT_EQ(arrival[T], kTrueArrivalT);
   // Label telemetry: X keeps two feasibility classes (early exit banned vs late
@@ -131,7 +131,7 @@ TEST(CCHExactCases, ForcedDetourOutsideBanFreeCorridor) {
   EXPECT_TRUE(down_allowed.count(D));
 
   std::unordered_map<uint32_t, float> arrival;
-  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, &down_allowed, arrival,
+  ContractedTdEarliest(order, metric, S, {T}, /*depart_sow=*/0, &down_allowed, nullptr, arrival,
                        nullptr);
   ASSERT_TRUE(arrival.find(T) != arrival.end())
       << "Stage-1 contracted + covering must find the ban-free detour";

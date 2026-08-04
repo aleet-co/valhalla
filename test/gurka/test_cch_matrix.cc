@@ -1,13 +1,17 @@
 #include "gurka.h"
 #include "test.h"
 #include "thor/cch/cch_graph.h"
+#include "thor/cch/contracted_search.h"
+#include "thor/cch/customizer.h"
 #include "thor/cch/order.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace valhalla;
@@ -197,6 +201,61 @@ TEST_F(CchMatrixTest, ContractedBanFreeMatchesTdmWithinTolerance) {
   }
   EXPECT_GE(static_cast<double>(matches) / total, 0.95)
       << matches << "/" << total << " pairs within tolerance";
+}
+
+// Stage 3 ship gate: contracted_pareto with RPHAST buckets must match Stage-2
+// (same mode, buckets disabled via direct search) within 1e-3s on a multi
+// source×target ban-free matrix built from this gurka overlay.
+TEST_F(CchMatrixTest, ContractedParetoBucketsMatchStage2) {
+  baldr::GraphReader reader(map.config.get_child("mjolnir"));
+  auto graph = thor::cch::BuildTruckGraph(reader);
+  auto order = thor::cch::CchOrder::load(artifact);
+  ASSERT_EQ(graph.nodes.size(), order.rank.size());
+  order.build_adjacency(graph);
+  auto metric = thor::cch::Customize(graph, order);
+
+  // Multi S×T: several top-rail nodes as both sources and targets.
+  auto node_of = [&](const std::string& name) -> uint32_t {
+    const auto& ll = map.nodes.at(name);
+    uint32_t best = 0;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
+      const double dlat = ll.lat() - graph.nodes[i].lat;
+      const double dlon = ll.lng() - graph.nodes[i].lon;
+      const double d2 = dlat * dlat + dlon * dlon;
+      if (d2 < best_d2) {
+        best_d2 = d2;
+        best = i;
+      }
+    }
+    return best;
+  };
+  const std::vector<uint32_t> sources = {node_of("A"), node_of("C"), node_of("F"), node_of("L")};
+  const std::vector<uint32_t> targets = {node_of("B"), node_of("D"), node_of("G"), node_of("I"),
+                                         node_of("K"), node_of("a"), node_of("f"), node_of("l")};
+
+  std::unordered_set<uint32_t> down_allowed;
+  thor::cch::RphastBuckets buckets;
+  thor::cch::BuildRphastPhaseA(order, metric, targets, down_allowed, &buckets, nullptr);
+  ASSERT_FALSE(buckets.empty());
+
+  const int64_t depart_sow = 0;
+  int compared = 0;
+  for (uint32_t s : sources) {
+    std::unordered_map<uint32_t, float> stage2;
+    thor::cch::ContractedTdPareto(order, metric, s, targets, depart_sow, &down_allowed, nullptr,
+                                  stage2, nullptr, nullptr);
+    std::unordered_map<uint32_t, float> stage3;
+    thor::cch::ContractedTdPareto(order, metric, s, targets, depart_sow, &down_allowed, &buckets,
+                                  stage3, nullptr, nullptr);
+    ASSERT_EQ(stage2.size(), stage3.size()) << "source node " << s;
+    for (const auto& [t, d2] : stage2) {
+      ASSERT_TRUE(stage3.count(t)) << "missing target " << t << " from source " << s;
+      EXPECT_NEAR(stage3[t], d2, 1e-3f) << "s=" << s << " t=" << t;
+      ++compared;
+    }
+  }
+  EXPECT_GT(compared, 0);
 }
 
 } // namespace

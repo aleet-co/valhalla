@@ -15,6 +15,14 @@ namespace valhalla {
 namespace thor {
 namespace cch {
 
+// Per-node RPHAST bucket: targets reachable via a ban-free-safe static down path
+// from this node, with the corresponding BanFreeDownwardReach distance.
+struct RphastBucketEntry {
+  uint32_t target = 0;
+  float down_dist = 0.f;
+};
+using RphastBuckets = std::unordered_map<uint32_t, std::vector<RphastBucketEntry>>;
+
 // Stage 1 contracted-graph TD earliest arrival (single label per node).
 //
 // Adjacency walk from settled node `u` with travel-time label `d`:
@@ -28,18 +36,23 @@ namespace cch {
 //        - down_allowed->count(v) (head is in the ban-free G↓ mark set).
 //      Feasibility uses the same EdgeFeasibleAt check on entry_sow.
 // On success, nd = d + profiles[eid].time_s. Missing arrival keys = unsettled.
+// If buckets != nullptr, on each settled label at u also apply
+//   arrival[t] = min(arrival[t], d + down_dist) for each ban-free-safe bucket
+//   entry (t, down_dist) at u (Stage 3 RPHAST settle). nullptr buckets = Stage 1/2.
 void ContractedTdEarliest(const CchOrder& order,
                           const CustomizedMetric& metric,
                           uint32_t source,
                           const std::vector<uint32_t>& targets,
                           int64_t depart_sow,
                           const std::unordered_set<uint32_t>* down_allowed,
+                          const RphastBuckets* buckets,
                           std::unordered_map<uint32_t, float>& arrival,
                           const std::function<void()>* interrupt);
 
 // Stage 2 contracted-graph TD search with Pareto-on-arrival labels.
 //
-// Same adjacency / EdgeFeasibleAt / down_allowed rules as ContractedTdEarliest.
+// Same adjacency / EdgeFeasibleAt / down_allowed / buckets rules as
+// ContractedTdEarliest.
 // Label rule (sufficient for static travel times + weekly slot bans, no waiting):
 //   Feasibility class at node u for arrival d is the bitmask of which outgoing
 //   edges (fwd_adj[u] then inverted bwd down-successors, index order) are
@@ -56,6 +69,7 @@ void ContractedTdPareto(const CchOrder& order,
                         const std::vector<uint32_t>& targets,
                         int64_t depart_sow,
                         const std::unordered_set<uint32_t>* down_allowed,
+                        const RphastBuckets* buckets,
                         std::unordered_map<uint32_t, float>& arrival,
                         std::vector<uint32_t>* label_counts_out,
                         const std::function<void()>* interrupt);
@@ -68,6 +82,18 @@ void BanFreeDownwardReach(const CchOrder& order,
                           std::unordered_set<uint32_t>& nodes,
                           std::unordered_map<uint32_t, float>* down_dist_out,
                           const std::function<void()>* interrupt);
+
+// Stage 3 Phase A: union BanFreeDownwardReach over targets into down_allowed.
+// When buckets != nullptr, also fill per-node ban-free-safe bucket entries
+// (empty forbidden along the stored shortest down parent-tree path to the
+// target). Edges with any ban mask are omitted from buckets so static
+// forward+down addition cannot under-estimate vs TD search.
+void BuildRphastPhaseA(const CchOrder& order,
+                       const CustomizedMetric& metric,
+                       const std::vector<uint32_t>& targets,
+                       std::unordered_set<uint32_t>& down_allowed,
+                       RphastBuckets* buckets,
+                       const std::function<void()>* interrupt);
 
 // !is_forbidden(p.forbidden, entry_sow)
 bool EdgeFeasibleAt(const Profile& p, int64_t entry_sow);
