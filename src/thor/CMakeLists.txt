@@ -5,6 +5,7 @@ set(sources
   bidirectional_astar.cc
   cch/cch_graph.cc
   cch/cch_matrix.cc
+  cch/contracted_search.cc
   cch/customizer.cc
   cch/nested_dissection.cc
   cch/order.cc
