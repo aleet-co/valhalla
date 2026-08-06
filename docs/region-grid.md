@@ -1,22 +1,27 @@
 # Truck region grid (`valhalla_build_region_grid`)
 
-Offline tool that partitions the Europe truck subgraph into ~6 000 country-clipped
-H3 regions, picks a network medoid per region, and assigns every truck-graph node
-to a region via in-country network Voronoi ownership.
+Offline tool that partitions the truck subgraph into country-clipped H3 regions,
+picks a network medoid per region, and assigns every truck-graph node to a region
+via in-country network Voronoi ownership.
 
 This artifact is the snap layer for later representative time-dependent matrices.
 It does **not** compute ban safe-ranges or TD fill.
 
+| Map region | Soft `--target-regions` | Density cutoffs |
+|------------|-------------------------|-----------------|
+| Europe tiles | **6000** | `dense_max_h3_res=5`, `dense_density_factor=1.5` |
+| `central-eu` tiles (PL+DE+SK+CZ+AT) | **800** | **same** |
+
 ## Prerequisites
 
-- Built Valhalla Europe tiles (`mjolnir.tile_dir` / extract in config)
+- Built Valhalla tiles for the map region (`mjolnir.tile_dir` / extract in config)
 - CMake build with tools enabled (vendored Uber H3 in `third_party/h3`)
-- Recommended host: `r6i.8xlarge` (32 vCPU, 256 GB) for full Europe
+- Recommended host: `r6i.8xlarge` (32 vCPU, 256 GB) for full Europe; central-eu is lighter
 
 On the **EC2 task image**, `valhalla_build_region_grid` is installed under `/usr/local/bin`
-(compiled from `valhalla-fork` during `./buildEC2TaskImage.sh`). Tiles and `cch_truck.bin`
-come from the base image; you can run the grid tool in the running task container without
-an extra compile step.
+(compiled from `valhalla-fork` during `./buildEC2TaskImage.sh`). Tiles and optional
+`cch_truck.bin` come from the base image; you can run the grid tool in the running task
+container without an extra compile step.
 
 ## Build (local / fork tree)
 
@@ -25,19 +30,40 @@ cd valhalla-fork
 cmake --build build --target valhalla_build_region_grid -j
 ```
 
-## Run (task container)
+## Run — Europe (task container)
 
 ```bash
 valhalla_build_region_grid -c /custom_files/valhalla.json \
   --out-dir /custom_files/region_grid \
   --target-regions 6000 \
   --dense-max-h3-res 5 \
+  --dense-density-factor 1.5 \
   --exclude-countries RU,BY \
   --levels 0,1 \
   --max-class 6 \
   --hgv-only \
   --write-geojson
 ```
+
+## Run — central-eu (task container)
+
+Same density cutoffs; smaller soft target for the five-country tile set:
+
+```bash
+valhalla_build_region_grid -c /custom_files/valhalla.json \
+  --out-dir /data/region_grid_central_eu \
+  --target-regions 800 \
+  --dense-max-h3-res 5 \
+  --dense-density-factor 1.5 \
+  --exclude-countries RU,BY \
+  --levels 0,1 \
+  --max-class 6 \
+  --hgv-only \
+  --write-geojson
+```
+
+Then scaffold rep_matrix with `--central-eu` (see aleet
+`private/modules/valhalla/scripts/README_rep_matrix.md`).
 
 ## Run (local binary)
 
@@ -50,6 +76,7 @@ valhalla_build_region_grid -c /custom_files/valhalla.json \
   --hgv-only \
   --write-geojson
 ```
+
 ### Useful flags
 
 | Flag | Default | Meaning |

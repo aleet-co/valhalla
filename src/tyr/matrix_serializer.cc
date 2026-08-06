@@ -115,17 +115,18 @@ namespace valhalla_serializers {
 void locations(const google::protobuf::RepeatedPtrField<valhalla::Location>& locations,
                rapidjson::writer_wrapper_t& writer) {
   for (const auto& location : locations) {
+    // Uncorrelated locations serialize as JSON null — must not call end_object().
     if (location.correlation().edges().size() == 0) {
       writer(nullptr);
-    } else {
-      auto& corr_ll = location.correlation().edges(0).ll();
-      writer.start_object();
-      writer.set_precision(tyr::kCoordinatePrecision);
-      writer("lat", corr_ll.lat());
-      writer("lon", corr_ll.lng());
-      if (!location.name().empty()) {
-        writer("name", location.name());
-      }
+      continue;
+    }
+    auto& corr_ll = location.correlation().edges(0).ll();
+    writer.start_object();
+    writer.set_precision(tyr::kCoordinatePrecision);
+    writer("lat", corr_ll.lat());
+    writer("lon", corr_ll.lng());
+    if (!location.name().empty()) {
+      writer("name", location.name());
     }
     writer.end_object();
   }
