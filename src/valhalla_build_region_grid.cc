@@ -168,6 +168,8 @@ int main(int argc, char* argv[]) {
   double dense_density_factor = 1.5;
   bool hgv_only = true;
   bool write_geojson_flag = false;
+  // Match rep_matrix baseline intent: 40000 kg → 40 metric tons (Valhalla API unit).
+  float truck_weight_t = 40.f;
 
   try {
     cxxopts::Options options(
@@ -187,6 +189,9 @@ int main(int argc, char* argv[]) {
         cxxopts::value<uint32_t>(max_class)->default_value("6"))
       ("hgv-only", "Only include truck-accessible edges.",
         cxxopts::value<bool>(hgv_only)->default_value("true")->implicit_value("true"))
+      ("truck-weight", "Truck weight in metric tons for access-restriction filter "
+        "(must match CostMatrix costing_options.truck.weight).",
+        cxxopts::value<float>(truck_weight_t)->default_value("40"))
       ("target-regions", "Target number of regions (excludes dropped countries).",
         cxxopts::value<uint32_t>(target_regions)->default_value("6000"))
       ("base-h3-res", "Initial H3 resolution before merge/split.",
@@ -235,14 +240,20 @@ int main(int argc, char* argv[]) {
 
   LOG_INFO("valhalla_build_region_grid: levels=" + levels_str +
            " max_class=" + std::to_string(max_class) + " hgv_only=" + (hgv_only ? "1" : "0") +
+           " truck_weight_t=" + std::to_string(truck_weight_t) +
            " target=" + std::to_string(target_regions) +
            " dense_max_h3_res=" + std::to_string(dense_max_h3_res) +
            " exclude=" + exclude_countries_str + " out_dir=" + out_dir);
 
   LOG_INFO("valhalla_build_region_grid: phase 1/2 Building truck subgraph...");
   const auto t1 = clock::now();
+  thor::cch::TruckGraphOptions truck_opts;
+  truck_opts.hgv_only = hgv_only;
+  truck_opts.exclude_destonly_hgv = true;
+  truck_opts.apply_access_restrictions = true;
+  truck_opts.vehicle.weight_t = truck_weight_t;
   auto graph = thor::cch::BuildTruckGraph(config.get_child("mjolnir"), levels,
-                                          static_cast<uint8_t>(max_class), concurrency, hgv_only);
+                                          static_cast<uint8_t>(max_class), concurrency, truck_opts);
   LOG_INFO("valhalla_build_region_grid: phase 1/2 done  nodes=" +
            std::to_string(graph.nodes.size()) + " edges=" + std::to_string(graph.edges.size()) +
            " phase_s=" + std::to_string(secs(t1)));

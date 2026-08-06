@@ -85,6 +85,7 @@ Then scaffold rep_matrix with `--central-eu` (see aleet
 | `--levels` | `0,1` | Hierarchy levels (highway + arterial) |
 | `--max-class` | `6` | Max OSM road class kept |
 | `--hgv-only` | `true` | Keep only `kTruckAccess` edges |
+| `--truck-weight` | `40` | Metric tons for maxweight/… filters (match CostMatrix `weight`) |
 | `--target-regions` | `6000` | Soft target cell count after merge/split |
 | `--base-h3-res` | `5` | Seed H3 resolution |
 | `--max-h3-res` | `6` | Hard cap for any cell |
@@ -122,8 +123,14 @@ If `regions.geojson` is absent, polygons are reconstructed from the `h3` column 
 2. Drop excluded countries (default RU/BY); weight remaining countries by in-country truck edge time; allocate cell budgets  
 3. H3 partition at base res 5, merge/split toward each country’s budget  
 4. Dense-area split cap: cells with high weight/km² stop refining at `dense_max_h3_res` (sparse cells may reach `max_h3_res`)  
-5. Network medoid per cell (sampled Dijkstra on cell + 1-ring halo)  
-6. Multi-source Dijkstra Voronoi, **no cross-country ownership transfer** (excluded-country nodes stay unassigned)
+5. Build truck subgraph with CostMatrix-aligned filters: `kTruckAccess`, impassable
+   surface drop, `destonly_hgv` drop, dimensional access restrictions at `--truck-weight`
+   (default 40 t, matching rep_matrix baseline)  
+6. Per-country **giant strongly connected component** (directed); cells with no nodes in
+   that SCC are dropped  
+7. Network medoid per remaining cell (sampled Dijkstra on cell + 1-ring halo; candidates
+   restricted to the giant SCC)  
+8. Multi-source Dijkstra Voronoi, **no cross-country ownership transfer**
 
 ## Tests
 

@@ -29,6 +29,27 @@ struct CchBaseEdge {
   uint8_t roadclass = 0;
 };
 
+// Truck dimensions matching sif::TruckCost / Valhalla API (metric tons, meters).
+// Used to apply the same access-restriction checks CostMatrix uses.
+struct TruckVehicleParams {
+  float weight_t = 21.77f;
+  float axle_load_t = 9.07f;
+  float height_m = 4.11f;
+  float width_m = 2.6f;
+  float length_m = 21.64f;
+  uint32_t axle_count = 5;
+  bool hazmat = false;
+};
+
+struct TruckGraphOptions {
+  bool hgv_only = false;
+  // Drop destonly_hgv edges (CostMatrix first pass cannot enter them from through traffic).
+  bool exclude_destonly_hgv = false;
+  // Apply dimensional access restrictions (maxweight/height/…) like TruckCost.
+  bool apply_access_restrictions = false;
+  TruckVehicleParams vehicle;
+};
+
 class CchGraph {
 public:
   std::vector<CchNode> nodes;
@@ -53,7 +74,13 @@ private:
 };
 
 // Parallel build: one GraphReader per worker thread. concurrency == 0 → hardware_concurrency.
-// When hgv_only is true, only edges with kTruckAccess are kept (transitions always kept).
+CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
+                         const std::set<uint32_t>& levels,
+                         uint8_t max_roadclass,
+                         uint32_t concurrency,
+                         const TruckGraphOptions& options);
+
+// Convenience: hgv_only only (CCH / legacy callers).
 CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
                          const std::set<uint32_t>& levels = {0, 1, 2},
                          uint8_t max_roadclass = 7,
@@ -61,6 +88,11 @@ CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
                          bool hgv_only = false);
 
 // Single-reader path (runtime customize / tests). Always single-threaded.
+CchGraph BuildTruckGraph(baldr::GraphReader& reader,
+                         const std::set<uint32_t>& levels,
+                         uint8_t max_roadclass,
+                         const TruckGraphOptions& options);
+
 CchGraph BuildTruckGraph(baldr::GraphReader& reader,
                          const std::set<uint32_t>& levels = {0, 1, 2},
                          uint8_t max_roadclass = 7,

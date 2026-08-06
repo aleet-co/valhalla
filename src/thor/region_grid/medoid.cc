@@ -9,6 +9,7 @@
 #include <chrono>
 #include <limits>
 #include <queue>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -101,7 +102,6 @@ std::unordered_set<uint32_t> build_halo_allow(const cch::CchGraph& graph,
   std::unordered_set<uint32_t> allow;
   allow.insert(cell.node_indices.begin(), cell.node_indices.end());
   // 1-ring H3 halo: include nodes whose H3 (same res as cell) is a neighbor.
-  const int res = H3Resolution(cell.h3_index);
   auto disk = H3GridDisk(cell.h3_index, 1);
   for (uint64_t h : disk) {
     auto it = h3_to_nodes.find(h);
@@ -119,11 +119,130 @@ std::unordered_set<uint32_t> build_halo_allow(const cch::CchGraph& graph,
         allow.insert(e.v);
     }
   }
-  (void)res;
   return allow;
 }
 
+std::string country_iso(const cch::CchNode& n) {
+  return n.country.empty() ? "XX" : n.country;
+}
+
 } // namespace
+
+std::vector<uint8_t> MarkGiantComponentNodes(const cch::CchGraph& graph) {
+  const size_t n = graph.nodes.size();
+  std::vector<uint8_t> in_giant(n, 0);
+  if (n == 0)
+    return in_giant;
+
+  auto same_country = [&](uint32_t a, uint32_t b) {
+    return country_iso(graph.nodes[a]) == country_iso(graph.nodes[b]);
+  };
+
+  // Kosaraju pass 1: finish order via iterative DFS on out-edges.
+  // color: 0=white, 1=gray, 2=black
+  std::vector<uint8_t> color(n, 0);
+  std::vector<uint32_t> order;
+  order.reserve(n);
+  std::vector<std::pair<uint32_t, uint32_t>> stack; // (node, next_out_edge_cursor)
+  stack.reserve(64);
+
+  for (uint32_t start = 0; start < n; ++start) {
+    if (color[start] != 0)
+      continue;
+    stack.clear();
+    stack.emplace_back(start, graph.out_offsets.size() > start + 1 ? graph.out_offsets[start] : 0);
+    color[start] = 1;
+    while (!stack.empty()) {
+      const uint32_t u = stack.back().first;
+      uint32_t ei = stack.back().second;
+      const uint32_t ei_end = (u + 1 < graph.out_offsets.size()) ? graph.out_offsets[u + 1] : ei;
+      bool pushed = false;
+      while (ei < ei_end) {
+        const auto& e = graph.edges[graph.out_edges[ei++]];
+        if (e.v >= n || color[e.v] != 0 || !same_country(u, e.v))
+          continue;
+        stack.back().second = ei;
+        color[e.v] = 1;
+        stack.emplace_back(e.v, e.v + 1 < graph.out_offsets.size() ? graph.out_offsets[e.v] : 0);
+        pushed = true;
+        break;
+      }
+      if (pushed)
+        continue;
+      color[u] = 2;
+      order.push_back(u);
+      stack.pop_back();
+    }
+  }
+
+  // Kosaraju pass 2: assign components on transposed graph (in-edges).
+  std::vector<uint32_t> comp(n, std::numeric_limits<uint32_t>::max());
+  uint32_t ncomp = 0;
+  std::vector<uint32_t> q;
+  q.reserve(64);
+  for (auto it = order.rbegin(); it != order.rend(); ++it) {
+    const uint32_t start = *it;
+    if (comp[start] != std::numeric_limits<uint32_t>::max())
+      continue;
+    const uint32_t cid = ncomp++;
+    q.clear();
+    q.push_back(start);
+    comp[start] = cid;
+    for (size_t qi = 0; qi < q.size(); ++qi) {
+      const uint32_t u = q[qi];
+      if (u + 1 >= graph.in_offsets.size())
+        continue;
+      for (uint32_t ei = graph.in_offsets[u]; ei < graph.in_offsets[u + 1]; ++ei) {
+        const auto& e = graph.edges[graph.in_edges[ei]];
+        if (e.u >= n || comp[e.u] != std::numeric_limits<uint32_t>::max())
+          continue;
+        if (!same_country(u, e.u))
+          continue;
+        comp[e.u] = cid;
+        q.push_back(e.u);
+      }
+    }
+  }
+
+  // Per country: largest SCC (tie → lower component id).
+  std::unordered_map<std::string, std::unordered_map<uint32_t, uint32_t>> sizes;
+  std::unordered_map<std::string, uint32_t> country_nodes;
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string iso = country_iso(graph.nodes[i]);
+    ++country_nodes[iso];
+    ++sizes[iso][comp[i]];
+  }
+
+  std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> best; // cid, size
+  for (const auto& ck : sizes) {
+    for (const auto& cs : ck.second) {
+      auto it = best.find(ck.first);
+      if (it == best.end() || cs.second > it->second.second ||
+          (cs.second == it->second.second && cs.first < it->second.first)) {
+        best[ck.first] = {cs.first, cs.second};
+      }
+    }
+  }
+
+  uint32_t marked = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string iso = country_iso(graph.nodes[i]);
+    if (comp[i] == best[iso].first) {
+      in_giant[i] = 1;
+      ++marked;
+    }
+  }
+
+  for (const auto& kv : best) {
+    const uint32_t total = country_nodes[kv.first];
+    LOG_INFO("region_grid: giant SCC country=" + kv.first + " size=" +
+             std::to_string(kv.second.second) + "/" + std::to_string(total) + " (" +
+             std::to_string(total == 0 ? 0 : (100 * kv.second.second / total)) + "%)");
+  }
+  LOG_INFO("region_grid: giant SCC marked " + std::to_string(marked) + "/" + std::to_string(n) +
+           " nodes");
+  return in_giant;
+}
 
 std::vector<uint32_t> ChooseMedoids(const cch::CchGraph& graph,
                                     const std::vector<CellSeed>& cells,
@@ -133,18 +252,29 @@ std::vector<uint32_t> ChooseMedoids(const cch::CchGraph& graph,
   // Index all nodes by H3 at each cell's resolution; build per-res maps lazily.
   std::unordered_map<int, std::unordered_map<uint64_t, std::vector<uint32_t>>> by_res;
 
+  const auto in_giant = MarkGiantComponentNodes(graph);
+
   LOG_INFO("region_grid: medoids start  cells=" + std::to_string(cells.size()) +
            " sample_cap=" + std::to_string(sample_cap));
   const auto t0 = clock::now();
   auto last_log = t0;
 
+  uint32_t dropped_no_giant = 0;
   std::vector<uint32_t> medoids(cells.size(), 0);
   for (size_t ci = 0; ci < cells.size(); ++ci) {
     const auto& cell = cells[ci];
-    if (cell.node_indices.empty()) {
-      medoids[ci] = 0;
-    } else if (cell.node_indices.size() == 1) {
-      medoids[ci] = cell.node_indices[0];
+    std::vector<uint32_t> giant_nodes;
+    giant_nodes.reserve(cell.node_indices.size());
+    for (uint32_t ni : cell.node_indices) {
+      if (ni < in_giant.size() && in_giant[ni])
+        giant_nodes.push_back(ni);
+    }
+
+    if (giant_nodes.empty()) {
+      medoids[ci] = std::numeric_limits<uint32_t>::max();
+      ++dropped_no_giant;
+    } else if (giant_nodes.size() == 1) {
+      medoids[ci] = giant_nodes[0];
     } else {
       const int res = H3Resolution(cell.h3_index);
       auto rit = by_res.find(res);
@@ -159,10 +289,10 @@ std::vector<uint32_t> ChooseMedoids(const cch::CchGraph& graph,
         rit = by_res.find(res);
       }
       auto allow = build_halo_allow(graph, cell, rit->second);
-      auto samples = sample_nodes(cell.node_indices, sample_cap);
+      auto samples = sample_nodes(giant_nodes, sample_cap);
 
       uint64_t best_score = std::numeric_limits<uint64_t>::max();
-      uint32_t best_node = cell.node_indices[0];
+      uint32_t best_node = samples[0];
       uint8_t best_rc = 255;
 
       for (uint32_t cand : samples) {
@@ -191,6 +321,7 @@ std::vector<uint32_t> ChooseMedoids(const cch::CchGraph& graph,
   }
 
   LOG_INFO("region_grid: medoids done  cells=" + std::to_string(cells.size()) +
+           " dropped_no_giant=" + std::to_string(dropped_no_giant) +
            "  elapsed=" + FormatDuration(ElapsedSeconds(t0)));
   return medoids;
 }

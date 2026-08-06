@@ -31,26 +31,42 @@ RegionGridResult BuildRegionGrid(const cch::CchGraph& graph, const RegionGridOpt
       ChooseMedoids(graph, cells, options.medoid_sample_cap, options.unreachable_penalty_s);
 
   result.regions.reserve(cells.size());
+  std::vector<uint32_t> kept_medoids;
   std::vector<uint32_t> medoid_region_ids;
+  kept_medoids.reserve(cells.size());
   medoid_region_ids.reserve(cells.size());
 
+  uint32_t dropped = 0;
   for (uint32_t i = 0; i < cells.size(); ++i) {
+    if (medoid_nodes[i] == std::numeric_limits<uint32_t>::max() ||
+        medoid_nodes[i] >= graph.nodes.size()) {
+      ++dropped;
+      continue;
+    }
     Region r;
-    r.region_id = i;
+    r.region_id = static_cast<uint32_t>(result.regions.size());
     r.country = cells[i].country;
     r.h3_index = cells[i].h3_index;
     r.rep_node_index = medoid_nodes[i];
-    if (r.rep_node_index < graph.nodes.size()) {
-      r.rep_lat = graph.nodes[r.rep_node_index].lat;
-      r.rep_lon = graph.nodes[r.rep_node_index].lon;
-    }
+    r.rep_lat = graph.nodes[r.rep_node_index].lat;
+    r.rep_lon = graph.nodes[r.rep_node_index].lon;
     r.node_count = 0; // filled after Voronoi
     result.regions.push_back(r);
-    medoid_region_ids.push_back(i);
+    kept_medoids.push_back(r.rep_node_index);
+    medoid_region_ids.push_back(r.region_id);
+  }
+
+  if (dropped > 0) {
+    LOG_WARN("region_grid: dropped " + std::to_string(dropped) +
+             " cells with no giant-component medoid candidate");
+  }
+  if (result.regions.empty()) {
+    LOG_WARN("region_grid: no regions after giant-component gate");
+    return result;
   }
 
   LOG_INFO("region_grid: computing network Voronoi...");
-  auto voronoi = ComputeNetworkVoronoi(graph, medoid_nodes, medoid_region_ids);
+  auto voronoi = ComputeNetworkVoronoi(graph, kept_medoids, medoid_region_ids);
   result.node_regions = std::move(voronoi.node_regions);
   result.euclidean_fallback_count = voronoi.euclidean_fallback_count;
 

@@ -1,5 +1,6 @@
 #include "thor/cch/cch_graph.h"
 
+#include <valhalla/baldr/accessrestriction.h>
 #include <valhalla/baldr/admin.h>
 #include <valhalla/baldr/graphconstants.h>
 #include <valhalla/baldr/graphid.h>
@@ -75,11 +76,77 @@ std::vector<CchNode> extract_nodes(GraphReader& reader, const GraphId& tile_id) 
   return nodes;
 }
 
+// Mirrors sif::TruckCost::ModeSpecificAllowed for static (non-time) restrictions.
+bool truck_restriction_allows(const AccessRestriction& restriction,
+                              const TruckVehicleParams& vehicle) {
+  switch (restriction.type()) {
+    case AccessType::kHazmat:
+      if (vehicle.hazmat && !restriction.value())
+        return false;
+      break;
+    case AccessType::kMaxAxleLoad:
+      if (vehicle.axle_load_t > static_cast<float>(restriction.value() * 0.01))
+        return false;
+      break;
+    case AccessType::kMaxAxles:
+      if (vehicle.axle_count > static_cast<uint32_t>(restriction.value()))
+        return false;
+      break;
+    case AccessType::kMaxHeight:
+      if (vehicle.height_m > static_cast<float>(restriction.value() * 0.01))
+        return false;
+      break;
+    case AccessType::kMaxLength:
+      if (vehicle.length_m > static_cast<float>(restriction.value() * 0.01))
+        return false;
+      break;
+    case AccessType::kMaxWeight:
+      if (vehicle.weight_t > static_cast<float>(restriction.value() * 0.01))
+        return false;
+      break;
+    case AccessType::kMaxWidth:
+      if (vehicle.width_m > static_cast<float>(restriction.value() * 0.01))
+        return false;
+      break;
+    case AccessType::kTimedAllowed:
+    case AccessType::kTimedDenied:
+    case AccessType::kDestinationAllowed:
+      // Match CostMatrix baseline (no date_time): ignore time-based restrictions.
+      return true;
+    default:
+      return true;
+  }
+  return true;
+}
+
+bool edge_passes_truck_filters(const DirectedEdge* de,
+                               const graph_tile_ptr& tile,
+                               uint32_t edge_index,
+                               const TruckGraphOptions& options) {
+  if (de->is_shortcut())
+    return false;
+  if (options.hgv_only && !(de->forwardaccess() & kTruckAccess))
+    return false;
+  if (de->surface() == Surface::kImpassable)
+    return false;
+  if (options.exclude_destonly_hgv && de->destonly_hgv())
+    return false;
+  if (options.apply_access_restrictions && (de->access_restriction() & kTruckAccess)) {
+    for (const auto& restriction : tile->GetAccessRestrictions(edge_index, kTruckAccess)) {
+      // Through-traffic graph: except_destination still blocks if dimensions fail
+      // (CostMatrix only bypasses these once already on a dest-only path).
+      if (!truck_restriction_allows(restriction, options.vehicle))
+        return false;
+    }
+  }
+  return true;
+}
+
 std::vector<CchBaseEdge> extract_edges(GraphReader& reader,
                                        const GraphId& tile_id,
                                        const CchGraph& g,
                                        uint8_t max_roadclass,
-                                       bool hgv_only) {
+                                       const TruckGraphOptions& options) {
   std::vector<CchBaseEdge> edges;
   auto tile = reader.GetGraphTile(tile_id);
   if (tile == nullptr)
@@ -92,10 +159,9 @@ std::vector<CchBaseEdge> extract_edges(GraphReader& reader,
       continue;
     const NodeInfo* node = tile->node(nid);
     for (uint32_t i = 0; i < node->edge_count(); ++i) {
-      const DirectedEdge* de = tile->directededge(node->edge_index() + i);
-      if (de->is_shortcut())
-        continue;
-      if (hgv_only && !(de->forwardaccess() & kTruckAccess))
+      const uint32_t edge_index = node->edge_index() + i;
+      const DirectedEdge* de = tile->directededge(edge_index);
+      if (!edge_passes_truck_filters(de, tile, edge_index, options))
         continue;
       if (static_cast<uint8_t>(de->classification()) > max_roadclass)
         continue;
@@ -159,7 +225,7 @@ CchGraph build_from_tiles(const std::vector<GraphId>& tiles,
                           uint8_t max_roadclass,
                           uint32_t concurrency,
                           uint64_t tile_build_hash,
-                          bool hgv_only) {
+                          const TruckGraphOptions& options) {
   CchGraph g;
   const auto t0 = clock::now();
   const size_t tiles_total = tiles.size();
@@ -167,7 +233,11 @@ CchGraph build_from_tiles(const std::vector<GraphId>& tiles,
       single_reader ? 1u : resolve_concurrency(concurrency);
 
   LOG_INFO("cch graph: scanning " + std::to_string(tiles_total) +
-           " tiles (pass 1/2: nodes)  threads=" + std::to_string(threads));
+           " tiles (pass 1/2: nodes)  threads=" + std::to_string(threads) +
+           " hgv_only=" + (options.hgv_only ? "1" : "0") +
+           " exclude_destonly=" + (options.exclude_destonly_hgv ? "1" : "0") +
+           " access_restr=" + (options.apply_access_restrictions ? "1" : "0") +
+           " weight_t=" + std::to_string(options.vehicle.weight_t));
 
   std::vector<std::vector<CchNode>> nodes_by_tile(tiles_total);
   {
@@ -238,7 +308,7 @@ CchGraph build_from_tiles(const std::vector<GraphId>& tiles,
         const size_t i = next.fetch_add(1, std::memory_order_relaxed);
         if (i >= tiles_total)
           break;
-        edges_by_tile[i] = extract_edges(reader, tiles[i], g, max_roadclass, hgv_only);
+        edges_by_tile[i] = extract_edges(reader, tiles[i], g, max_roadclass, options);
         const size_t edge_count =
             edges_seen.fetch_add(edges_by_tile[i].size(), std::memory_order_relaxed) +
             edges_by_tile[i].size();
@@ -312,21 +382,40 @@ CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
                          const std::set<uint32_t>& levels,
                          uint8_t max_roadclass,
                          uint32_t concurrency,
-                         bool hgv_only) {
+                         const TruckGraphOptions& options) {
   GraphReader probe(mjolnir_config);
   auto tiles = collect_tiles(probe, levels);
   const uint64_t hash = probe.GetTileSet().size();
   return build_from_tiles(tiles, &mjolnir_config, nullptr, max_roadclass, concurrency, hash,
-                          hgv_only);
+                          options);
+}
+
+CchGraph BuildTruckGraph(const boost::property_tree::ptree& mjolnir_config,
+                         const std::set<uint32_t>& levels,
+                         uint8_t max_roadclass,
+                         uint32_t concurrency,
+                         bool hgv_only) {
+  TruckGraphOptions options;
+  options.hgv_only = hgv_only;
+  return BuildTruckGraph(mjolnir_config, levels, max_roadclass, concurrency, options);
+}
+
+CchGraph BuildTruckGraph(GraphReader& reader,
+                         const std::set<uint32_t>& levels,
+                         uint8_t max_roadclass,
+                         const TruckGraphOptions& options) {
+  auto tiles = collect_tiles(reader, levels);
+  const uint64_t hash = reader.GetTileSet().size();
+  return build_from_tiles(tiles, nullptr, &reader, max_roadclass, 1, hash, options);
 }
 
 CchGraph BuildTruckGraph(GraphReader& reader,
                          const std::set<uint32_t>& levels,
                          uint8_t max_roadclass,
                          bool hgv_only) {
-  auto tiles = collect_tiles(reader, levels);
-  const uint64_t hash = reader.GetTileSet().size();
-  return build_from_tiles(tiles, nullptr, &reader, max_roadclass, 1, hash, hgv_only);
+  TruckGraphOptions options;
+  options.hgv_only = hgv_only;
+  return BuildTruckGraph(reader, levels, max_roadclass, options);
 }
 
 } // namespace cch
