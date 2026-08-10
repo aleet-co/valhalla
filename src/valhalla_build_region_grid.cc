@@ -78,13 +78,15 @@ void write_node_regions_csv(const std::filesystem::path& path,
                             const thor::cch::CchGraph& graph,
                             const thor::region_grid::RegionGridResult& result) {
   std::ofstream out(path);
-  out << "graph_id,region_id,time_to_rep_s\n";
+  out << "graph_id,region_id,time_to_rep_s,lat,lon\n";
+  out << std::setprecision(8);
   constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
   for (size_t i = 0; i < graph.nodes.size() && i < result.node_regions.size(); ++i) {
     if (result.node_regions[i].region_id == kUnassigned)
       continue;
     out << graph.nodes[i].graph_id << ',' << result.node_regions[i].region_id << ','
-        << result.node_regions[i].time_to_rep_s << '\n';
+        << result.node_regions[i].time_to_rep_s << ',' << graph.nodes[i].lat << ','
+        << graph.nodes[i].lon << '\n';
   }
 }
 

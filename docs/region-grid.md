@@ -100,7 +100,7 @@ Then scaffold rep_matrix with `--central-eu` (see aleet
 | File | Contents |
 |------|----------|
 | `regions.csv` | `region_id,country,h3,rep_graph_id,rep_lat,rep_lon,node_count` |
-| `node_regions.csv` | `graph_id,region_id,time_to_rep_s` for every assigned truck node |
+| `node_regions.csv` | `graph_id,region_id,time_to_rep_s,lat,lon` for every assigned truck node |
 | `region_grid_meta.json` | `tile_build_hash`, levels, counts, exclude list, tool version |
 | `regions.geojson` | Optional H3 cell polygons |
 
@@ -131,6 +131,22 @@ If `regions.geojson` is absent, polygons are reconstructed from the `h3` column 
 7. Network medoid per remaining cell (sampled Dijkstra on cell + 1-ring halo; candidates
    restricted to the giant SCC)  
 8. Multi-source Dijkstra Voronoi, **no cross-country ownership transfer**
+
+## Re-Voronoi after pruning reps
+
+After a rep_matrix baseline, dead reps can be dropped (`prune-null-reps`) and ownership
+rebuilt without re-picking medoids:
+
+```bash
+valhalla_revoronoi_region_grid -c /custom_files/valhalla.json \
+  --regions /data/region_grid_central_eu/regions.csv \
+  --out-dir /data/region_grid_central_eu \
+  --levels 0,1 --max-class 6 --hgv-only --truck-weight 40
+```
+
+This rewrites `node_regions.csv` / `regions.csv` node counts from the kept
+`rep_graph_id`s via `ComputeNetworkVoronoi`, and regenerates `regions.geojson`
+so it matches the pruned region set.
 
 ## Tests
 
