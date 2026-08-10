@@ -2,6 +2,7 @@
 
 #include <valhalla/baldr/graphconstants.h>
 
+#include "midgard/logging.h"
 #include "sif/truck_ban_rules.h"
 
 namespace valhalla {
@@ -39,12 +40,19 @@ CustomizedMetric Customize(const CchGraph& g, const CchOrder& order,
   metric.profiles.resize(total);
 
   // Base edges: T from the graph, B from replaying the ban rules at the destination.
+  uint32_t banned_base = 0;
+  uint32_t banned_slots = 0;
   for (uint32_t ei = 0; ei < order.num_base_edges; ++ei) {
     const auto& e = g.edges[ei];
     Profile p;
     p.time_s = e.time_s;
     const auto& dest = g.nodes[e.v];
     p.forbidden = DeriveMask(dest.country, dest.tz_index, e.roadclass, reference_week_monday_utc);
+    const uint32_t nslots = popcount(p.forbidden);
+    if (nslots > 0) {
+      ++banned_base;
+      banned_slots += nslots;
+    }
     metric.profiles[ei] = p;
   }
 
@@ -59,6 +67,16 @@ CustomizedMetric Customize(const CchGraph& g, const CchOrder& order,
     const auto& sc = order.shortcuts[si];
     metric.profiles[order.num_base_edges + si] =
         compose(metric.profiles[sc.left], metric.profiles[sc.right]);
+  }
+
+  LOG_INFO("cch: customized bans reference_week_utc=" + std::to_string(reference_week_monday_utc) +
+           " base_edges=" + std::to_string(order.num_base_edges) +
+           " with_forbidden_slots=" + std::to_string(banned_base) +
+           " total_forbidden_slot_marks=" + std::to_string(banned_slots) +
+           " shortcuts=" + std::to_string(order.shortcuts.size()));
+  if (banned_base == 0) {
+    LOG_WARN("cch: zero base edges have ban slots — check tile admin ISO/timezones; "
+             "CCH will run but is NOT ban-aware");
   }
 
   return metric;
