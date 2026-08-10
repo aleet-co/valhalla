@@ -9,10 +9,17 @@ namespace sif {
 namespace truck_ban {
 
 // Data-driven ban schedule primitives. Keep in sync with
-// config/truck_ban_schedules.yaml (status: implemented). Weekday bits use
-// Sunday=0 .. Saturday=6 to match LocalBanTime / DateTime::day_of_week.
+// config/truck_ban_schedules.yaml (status: implemented, ban_mode: weekly_only)
+// and aleet private/modules/valhalla/valhalla/truck_bans.py.
+// Weekday bits use Sunday=0 .. Saturday=6 to match LocalBanTime / DateTime::day_of_week.
 // months_mask: bit (month-1) set ⇒ applies in that month; 0 ⇒ all months.
-
+//
+// Holiday / seasonal / eve-of-holiday counts are intentionally 0 so the joint
+// ban state is period-7-days (modulo DST). Offline rep_matrix tiles one week
+// of fingerprints over a year; if you re-add calendar-date rules here, TD fill
+// and live Allowed() will diverge unless the Python calendar grows too.
+// HolidayRule / SeasonalRule / EveOfHolidayRule structs remain so the evaluator
+// in truck_ban_rules.cc can stay unchanged.
 enum class BanScope : uint8_t {
   kAllRoads = 0,
   kMotorwayTrunk = 1,
@@ -83,32 +90,17 @@ inline constexpr uint8_t kSat = WeekdayBit(6);
 inline constexpr uint8_t kEveryDay =
     static_cast<uint8_t>(kSun | kMon | kTue | kWed | kThu | kFri | kSat);
 
-// IT winter (Jan–May, Oct–Dec) / summer (Jun–Sep) month masks.
-inline constexpr uint16_t kItWinterMonths = static_cast<uint16_t>(
-    MonthBit(1) | MonthBit(2) | MonthBit(3) | MonthBit(4) | MonthBit(5) | MonthBit(10) |
-    MonthBit(11) | MonthBit(12));
-inline constexpr uint16_t kItSummerMonths =
-    static_cast<uint16_t>(MonthBit(6) | MonthBit(7) | MonthBit(8) | MonthBit(9));
-
 // ── Austria ──────────────────────────────────────────────────────────────
 inline constexpr WeeklyRule kAtWeekly[] = {
     {BanScope::kAllRoads, kSat, {15, 0, 24, 0}, 0},     // Sat 15:00-24:00
     {BanScope::kAllRoads, kSun, {0, 0, 22, 0}, 0},      // Sun 00:00-22:00
     {BanScope::kAllRoads, kEveryDay, {22, 0, 5, 0}, 0}, // night 22:00-05:00
 };
-inline constexpr HolidayRule kAtHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 22, 0}, 0},
-};
 
 // ── Germany ──────────────────────────────────────────────────────────────
+// Sunday all-roads only. Former Jul–Aug Sat motorway ban omitted (weekly-only).
 inline constexpr WeeklyRule kDeWeekly[] = {
     {BanScope::kAllRoads, kSun, {0, 0, 22, 0}, 0},
-};
-inline constexpr HolidayRule kDeHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 22, 0}, 0},
-};
-inline constexpr SeasonalRule kDeSeasonal[] = {
-    {BanScope::kMotorwayTrunk, 7, 8, kSat, {7, 0, 20, 0}},
 };
 
 // ── Switzerland ──────────────────────────────────────────────────────────
@@ -116,17 +108,11 @@ inline constexpr WeeklyRule kChWeekly[] = {
     {BanScope::kAllRoads, kSun, {0, 0, 24, 0}, 0},
     {BanScope::kAllRoads, kEveryDay, {22, 0, 5, 0}, 0},
 };
-inline constexpr HolidayRule kChHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 24, 0}, 0},
-};
 
 // ── Liechtenstein (mirrors CH) ───────────────────────────────────────────
 inline constexpr WeeklyRule kLiWeekly[] = {
     {BanScope::kAllRoads, kSun, {0, 0, 24, 0}, 0},
     {BanScope::kAllRoads, kEveryDay, {22, 0, 5, 0}, 0},
-};
-inline constexpr HolidayRule kLiHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 24, 0}, 0},
 };
 
 // ── France ───────────────────────────────────────────────────────────────
@@ -134,78 +120,42 @@ inline constexpr WeeklyRule kFrWeekly[] = {
     {BanScope::kAllRoads, kSat, {22, 0, 24, 0}, 0},
     {BanScope::kAllRoads, kSun, {0, 0, 22, 0}, 0},
 };
-inline constexpr HolidayRule kFrHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 22, 0}, 0},
-};
-inline constexpr SeasonalRule kFrSeasonal[] = {
-    // Approx. Bison Futé summer Saturdays as all Jul–Aug Saturdays 07-19
-    {BanScope::kAllRoads, 7, 8, kSat, {7, 0, 19, 0}},
-};
-inline constexpr EveOfHolidayRule kFrEve[] = {
-    {BanScope::kAllRoads, {22, 0, 24, 0}},
-};
 
 // ── Hungary ──────────────────────────────────────────────────────────────
 inline constexpr WeeklyRule kHuWeekly[] = {
     {BanScope::kAllRoads, kSat, {22, 0, 24, 0}, 0},
     {BanScope::kAllRoads, kSun, {0, 0, 22, 0}, 0},
 };
-inline constexpr HolidayRule kHuHoliday[] = {
-    {BanScope::kAllRoads, {0, 0, 22, 0}, 0},
-};
-inline constexpr SeasonalRule kHuSeasonal[] = {
-    // Jul–Aug Saturday from 15:00 (extends the year-round 22:00 start)
-    {BanScope::kAllRoads, 7, 8, kSat, {15, 0, 24, 0}},
-};
-inline constexpr EveOfHolidayRule kHuEve[] = {
-    {BanScope::kAllRoads, {22, 0, 24, 0}},
-};
 
-// ── Italy ────────────────────────────────────────────────────────────────
+// ── Italy (fixed summer Sunday hours year-round for week periodicity) ────
+// Real rule is winter 09-22 / summer 07-22; pin 07-22 (longer ban) so the
+// offline week template does not need month masks.
 inline constexpr WeeklyRule kItWeekly[] = {
-    {BanScope::kAllRoads, kSun, {9, 0, 22, 0}, kItWinterMonths},
-    {BanScope::kAllRoads, kSun, {7, 0, 22, 0}, kItSummerMonths},
-};
-inline constexpr HolidayRule kItHoliday[] = {
-    {BanScope::kAllRoads, {9, 0, 22, 0}, kItWinterMonths},
-    {BanScope::kAllRoads, {7, 0, 22, 0}, kItSummerMonths},
+    {BanScope::kAllRoads, kSun, {7, 0, 22, 0}, 0},
 };
 
 // ── Czechia ──────────────────────────────────────────────────────────────
 inline constexpr WeeklyRule kCzWeekly[] = {
     {BanScope::kMotorwayTrunk, kSun, {13, 0, 22, 0}, 0},
 };
-inline constexpr HolidayRule kCzHoliday[] = {
-    {BanScope::kMotorwayTrunk, {13, 0, 22, 0}, 0},
-};
-inline constexpr SeasonalRule kCzSeasonal[] = {
-    {BanScope::kMotorwayTrunk, 7, 8, kFri, {17, 0, 21, 0}},
-    {BanScope::kMotorwayTrunk, 7, 8, kSat, {7, 0, 13, 0}},
-};
 
 // ── Slovakia ─────────────────────────────────────────────────────────────
 inline constexpr WeeklyRule kSkWeekly[] = {
     {BanScope::kMotorwayTrunk, kSun, {0, 0, 22, 0}, 0},
 };
-inline constexpr HolidayRule kSkHoliday[] = {
-    {BanScope::kMotorwayTrunk, {0, 0, 22, 0}, 0},
-};
-inline constexpr SeasonalRule kSkSeasonal[] = {
-    {BanScope::kMotorwayTrunk, 7, 8, kSat, {7, 0, 19, 0}},
-};
 
 // Tier A implemented countries. Order does not matter; lookup is linear.
 inline constexpr CountryRules kCountrySchedules[] = {
-    {"AT", "Europe/Vienna", 7.5f, kAtWeekly, 3, kAtHoliday, 1, nullptr, 0, nullptr, 0},
-    {"DE", "Europe/Berlin", 7.5f, kDeWeekly, 1, kDeHoliday, 1, kDeSeasonal, 1, nullptr, 0},
-    {"CH", "Europe/Zurich", 3.5f, kChWeekly, 2, kChHoliday, 1, nullptr, 0, nullptr, 0},
-    {"LI", "Europe/Zurich", 3.5f, kLiWeekly, 2, kLiHoliday, 1, nullptr, 0, nullptr, 0},
-    {"FR", "Europe/Paris", 7.5f, kFrWeekly, 2, kFrHoliday, 1, kFrSeasonal, 1, kFrEve, 1},
-    {"HU", "Europe/Budapest", 7.5f, kHuWeekly, 2, kHuHoliday, 1, kHuSeasonal, 1, kHuEve, 1},
-    {"IT", "Europe/Rome", 7.5f, kItWeekly, 2, kItHoliday, 2, nullptr, 0, nullptr, 0},
-    {"CZ", "Europe/Prague", 7.5f, kCzWeekly, 1, kCzHoliday, 1, kCzSeasonal, 2, nullptr, 0},
+    {"AT", "Europe/Vienna", 7.5f, kAtWeekly, 3, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"DE", "Europe/Berlin", 7.5f, kDeWeekly, 1, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"CH", "Europe/Zurich", 3.5f, kChWeekly, 2, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"LI", "Europe/Zurich", 3.5f, kLiWeekly, 2, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"FR", "Europe/Paris", 7.5f, kFrWeekly, 2, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"HU", "Europe/Budapest", 7.5f, kHuWeekly, 2, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"IT", "Europe/Rome", 7.5f, kItWeekly, 1, nullptr, 0, nullptr, 0, nullptr, 0},
+    {"CZ", "Europe/Prague", 7.5f, kCzWeekly, 1, nullptr, 0, nullptr, 0, nullptr, 0},
     // Europe/Bratislava is a deprecated IANA link; Europe/Prague is the canonical zone.
-    {"SK", "Europe/Prague", 7.5f, kSkWeekly, 1, kSkHoliday, 1, kSkSeasonal, 1, nullptr, 0},
+    {"SK", "Europe/Prague", 7.5f, kSkWeekly, 1, nullptr, 0, nullptr, 0, nullptr, 0},
 };
 
 inline constexpr size_t kCountryScheduleCount =
