@@ -63,13 +63,20 @@ protected:
          {"thor.cch.enabled", "true"},
          {"thor.cch.artifact", VALHALLA_BUILD_DIR "test/data/cch_matrix/cch_truck.bin"},
          {"thor.cch.query_mode", "contracted_pareto"},
+         // Gurka tiles live on level 2; keep filters explicit so production
+         // region-grid defaults (0,1 / hgv_only) do not empty this fixture.
+         {"thor.cch.levels", "0,1,2"},
+         {"thor.cch.max_class", "7"},
+         {"thor.cch.hgv_only", "false"},
          {"mjolnir.timezone", VALHALLA_BUILD_DIR "test/data/tz.sqlite"}});
 
     // Build the CCH artifact from the freshly built tiles and persist it where
     // the config points, so CCHMatrix::prepare() actually loads it (a matching
     // tile_build_hash is required, hence building from the same reader/tiles).
     baldr::GraphReader reader(map.config.get_child("mjolnir"));
-    auto graph = thor::cch::BuildTruckGraph(reader);
+    thor::cch::TruckGraphOptions truck_opts;
+    truck_opts.hgv_only = false;
+    auto graph = thor::cch::BuildTruckGraph(reader, {0, 1, 2}, 7, truck_opts);
     auto order = thor::cch::BuildOrder(graph);
     artifact = VALHALLA_BUILD_DIR "test/data/cch_matrix/cch_truck.bin";
     order.save(artifact);

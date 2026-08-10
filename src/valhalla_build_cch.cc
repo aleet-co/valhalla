@@ -60,8 +60,10 @@ int main(int argc, char* argv[]) {
   const auto program = std::filesystem::path(__FILE__).stem().string();
   boost::property_tree::ptree config;
   std::string output_path, levels_str, order_str;
-  uint32_t max_class = 7;
+  // Defaults match region-grid / thor.cch runtime filters (truck arterial subgraph).
+  uint32_t max_class = 6;
   uint32_t concurrency = 0;
+  bool hgv_only = true;
 
   try {
     cxxopts::Options options(
@@ -74,8 +76,10 @@ int main(int argc, char* argv[]) {
       ("c,config", "Path to the json configuration file.", cxxopts::value<std::string>())
       ("i,inline-config", "Inline json config.", cxxopts::value<std::string>())
       ("o,output", "Path to write the CCH artifact.", cxxopts::value<std::string>(output_path)->default_value("/custom_files/cch_truck.bin"))
-      ("levels", "Comma-separated hierarchy levels to include (0=highway,1=arterial,2=local).", cxxopts::value<std::string>(levels_str)->default_value("0,1,2"))
-      ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("7"))
+      ("levels", "Comma-separated hierarchy levels to include (0=highway,1=arterial,2=local).", cxxopts::value<std::string>(levels_str)->default_value("0,1"))
+      ("max-class", "Max RoadClass to include (0=motorway .. 7=service).", cxxopts::value<uint32_t>(max_class)->default_value("6"))
+      ("hgv-only", "Keep only truck-accessible edges (match region-grid / thor.cch).",
+        cxxopts::value<bool>(hgv_only)->default_value("true")->implicit_value("true"))
       ("order", "Contraction order: nested (METIS_NodeND, default) or independent-set.", cxxopts::value<std::string>(order_str)->default_value("nested"))
       ("j,concurrency", "Worker threads for subgraph load (0=hardware_concurrency). METIS uses its own parallelism.", cxxopts::value<uint32_t>(concurrency)->default_value("0"));
     // clang-format on
@@ -108,14 +112,18 @@ int main(int argc, char* argv[]) {
 
   LOG_INFO("valhalla_build_cch: levels=" + levels_str +
            " max_class=" + std::to_string(max_class) +
+           " hgv_only=" + (hgv_only ? "1" : "0") +
            " order=" + order_str +
            " concurrency=" + std::to_string(concurrency) +
            " output=" + output_path);
 
+  thor::cch::TruckGraphOptions truck_opts;
+  truck_opts.hgv_only = hgv_only;
+
   LOG_INFO("valhalla_build_cch: phase 1/3 Building truck subgraph...");
   const auto t1 = clock::now();
   auto graph = thor::cch::BuildTruckGraph(config.get_child("mjolnir"), levels, max_roadclass,
-                                          concurrency);
+                                          concurrency, truck_opts);
   LOG_INFO("valhalla_build_cch: phase 1/3 done  nodes=" + std::to_string(graph.nodes.size()) +
            " edges=" + std::to_string(graph.edges.size()) +
            " phase_s=" + std::to_string(secs(t1)));

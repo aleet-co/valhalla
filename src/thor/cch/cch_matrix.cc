@@ -1,7 +1,13 @@
 #include "thor/cch/cch_matrix.h"
 
 #include <cstdint>
+#include <cerrno>
+#include <fcntl.h>
 #include <fstream>
+#include <set>
+#include <sstream>
+#include <sys/file.h>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -16,6 +22,32 @@
 
 namespace valhalla {
 namespace thor {
+namespace {
+
+std::set<uint32_t> parse_cch_levels(const std::string& s) {
+  std::set<uint32_t> levels;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    if (!tok.empty())
+      levels.insert(static_cast<uint32_t>(std::stoul(tok)));
+  }
+  if (levels.empty())
+    levels = {0, 1};
+  return levels;
+}
+
+std::string levels_to_string(const std::set<uint32_t>& levels) {
+  std::string s;
+  for (uint32_t lvl : levels) {
+    if (!s.empty())
+      s += ",";
+    s += std::to_string(lvl);
+  }
+  return s;
+}
+
+} // namespace
 
 CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
     : MatrixAlgorithm(config),
@@ -31,6 +63,15 @@ CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
     query_mode_ = cch::QueryMode::ContractedPareto;
     LOG_WARN("cch: unknown query_mode '" + mode + "'; defaulting to contracted_pareto");
   }
+
+  // Subgraph filters must match the offline valhalla_build_cch invocation that
+  // produced the artifact (region-grid truck defaults).
+  levels_ = parse_cch_levels(config.get<std::string>("cch.levels", "0,1"));
+  max_class_ = static_cast<uint8_t>(config.get<uint32_t>("cch.max_class", 6));
+  truck_opts_.hgv_only = config.get<bool>("cch.hgv_only", true);
+  truck_opts_.exclude_destonly_hgv = config.get<bool>("cch.exclude_destonly_hgv", false);
+  truck_opts_.apply_access_restrictions =
+      config.get<bool>("cch.apply_access_restrictions", false);
 }
 
 void CCHMatrix::Clear() {
@@ -40,18 +81,49 @@ bool CCHMatrix::ensure_customized(baldr::GraphReader& reader) {
   if (ready_)
     return true;
 
-  // Negative-cache latch: a missing/mismatched artifact must not cause the
-  // (expensive) truck-graph build to rerun on every request. Try once.
-  if (customize_attempted_)
-    return false;
-  customize_attempted_ = true;
-
   // WIP kill-switch: keep CCH code paths but always fall back to TDM until the
   // offline artifact build is production-ready.
   if (!enabled_) {
+    // Latch so we do not re-log / re-probe every request.
+    customize_attempted_ = true;
     LOG_INFO("cch: disabled (thor.cch.enabled=false); matrix requests fall back to TDM");
     return false;
   }
+
+  // Serialize cold-start across prime_server worker *processes*. Without this,
+  // td-fill concurrency wakes many workers at once and each builds a full
+  // CustomizedMetric (~several GiB) in parallel → OOM. Steady-state RSS is
+  // still ~N_workers × metric size — keep VALHALLA_THREADS small for CCH.
+  const char* lock_path = "/tmp/valhalla_cch_customize.lock";
+  const int lock_fd = ::open(lock_path, O_CREAT | O_RDWR, 0644);
+  if (lock_fd >= 0) {
+    LOG_INFO("cch: waiting for customize lock pid=" + std::to_string(::getpid()));
+    if (::flock(lock_fd, LOCK_EX) != 0) {
+      LOG_WARN("cch: flock failed errno=" + std::to_string(errno) + "; continuing without lock");
+    }
+  } else {
+    LOG_WARN(std::string("cch: could not open ") + lock_path + "; continuing without lock");
+  }
+
+  struct LockGuard {
+    int fd;
+    ~LockGuard() {
+      if (fd >= 0) {
+        ::flock(fd, LOCK_UN);
+        ::close(fd);
+      }
+    }
+  } lock_guard{lock_fd};
+
+  // Another thread in this process may have finished while we waited.
+  if (ready_)
+    return true;
+
+  // Negative-cache latch: a missing/mismatched artifact must not cause the
+  // (expensive) truck-graph build to rerun on every request. Try once per worker.
+  if (customize_attempted_)
+    return false;
+  customize_attempted_ = true;
 
   std::ifstream probe(artifact_path_, std::ios::binary);
   if (!probe.good()) {
@@ -62,16 +134,33 @@ bool CCHMatrix::ensure_customized(baldr::GraphReader& reader) {
 
   try {
     order_ = cch::CchOrder::load(artifact_path_);
-    graph_ = cch::BuildTruckGraph(reader);
+    LOG_INFO("cch: building truck subgraph pid=" + std::to_string(::getpid()) +
+             " levels=[" + levels_to_string(levels_) +
+             "] max_class=" + std::to_string(static_cast<unsigned>(max_class_)) +
+             " hgv_only=" + (truck_opts_.hgv_only ? "1" : "0"));
+    graph_ = cch::BuildTruckGraph(reader, levels_, max_class_, truck_opts_);
     if (graph_.nodes.size() != order_.rank.size() ||
         graph_.tile_build_hash != order_.tile_build_hash) {
-      LOG_WARN("cch: artifact does not match current tiles; disabling cch");
+      LOG_WARN("cch: artifact does not match current tiles; disabling cch "
+               "(graph_nodes=" +
+               std::to_string(graph_.nodes.size()) +
+               " order_nodes=" + std::to_string(order_.rank.size()) +
+               " graph_hash=" + std::to_string(graph_.tile_build_hash) +
+               " order_hash=" + std::to_string(order_.tile_build_hash) +
+               "). Rebuild cch_truck.bin with the same thor.cch levels/max_class/hgv_only.");
+      return false;
+    }
+    if (graph_.edges.size() != order_.num_base_edges) {
+      LOG_WARN("cch: artifact base_edges=" + std::to_string(order_.num_base_edges) +
+               " != graph edges=" + std::to_string(graph_.edges.size()) +
+               "; filters likely diverge from valhalla_build_cch — disabling cch");
       return false;
     }
     order_.build_adjacency(graph_);
     metric_ = cch::Customize(graph_, order_);
     ready_ = true;
-    LOG_INFO("cch: customized metric ready (" + std::to_string(graph_.nodes.size()) + " nodes)");
+    LOG_INFO("cch: customized metric ready pid=" + std::to_string(::getpid()) + " (" +
+             std::to_string(graph_.nodes.size()) + " nodes)");
   } catch (const std::exception& e) {
     LOG_WARN(std::string("cch: customization failed: ") + e.what());
     ready_ = false;

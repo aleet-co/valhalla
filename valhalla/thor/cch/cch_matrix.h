@@ -1,6 +1,8 @@
 #ifndef VALHALLA_THOR_CCH_CCH_MATRIX_H_
 #define VALHALLA_THOR_CCH_CCH_MATRIX_H_
 
+#include <cstdint>
+#include <set>
 #include <string>
 
 #include <boost/property_tree/ptree.hpp>
@@ -63,6 +65,10 @@ private:
   // Negative-cache latch: once we've tried (and failed) to customize, don't
   // re-probe/re-build the truck graph on every subsequent request.
   bool customize_attempted_ = false;
+  // Must match valhalla_build_cch filters used to produce the artifact.
+  std::set<uint32_t> levels_{0, 1};
+  uint8_t max_class_ = 6;
+  cch::TruckGraphOptions truck_opts_;
   cch::CchGraph graph_;
   cch::CchOrder order_;
   cch::CustomizedMetric metric_;
