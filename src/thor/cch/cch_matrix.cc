@@ -4,9 +4,11 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <sys/file.h>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,6 +49,53 @@ std::string levels_to_string(const std::set<uint32_t>& levels) {
   return s;
 }
 
+// Process-wide CCH overlay: one customize for all thor worker threads.
+struct ProcessCCH {
+  std::mutex mu;
+  std::shared_ptr<const cch::SharedState> ready;
+  bool attempted = false; // success or permanent failure
+  std::string key;        // artifact+filters used for `ready` / failed attempt
+};
+
+ProcessCCH& process_cch() {
+  static ProcessCCH state;
+  return state;
+}
+
+std::string make_cch_key(const std::string& artifact,
+                         const std::set<uint32_t>& levels,
+                         uint8_t max_class,
+                         const cch::TruckGraphOptions& opts) {
+  return artifact + "|levels=" + levels_to_string(levels) +
+         "|max_class=" + std::to_string(static_cast<unsigned>(max_class)) +
+         "|hgv=" + (opts.hgv_only ? "1" : "0") +
+         "|destonly=" + (opts.exclude_destonly_hgv ? "1" : "0") +
+         "|arestr=" + (opts.apply_access_restrictions ? "1" : "0");
+}
+
+// Optional cross-process serialize (multi valhalla_service). Intra-process uses mutex.
+struct FileLockGuard {
+  int fd = -1;
+  explicit FileLockGuard(const char* path) {
+    fd = ::open(path, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+      LOG_WARN(std::string("cch: could not open ") + path + "; continuing without flock");
+      return;
+    }
+    if (::flock(fd, LOCK_EX) != 0) {
+      LOG_WARN("cch: flock failed errno=" + std::to_string(errno) + "; continuing without lock");
+      ::close(fd);
+      fd = -1;
+    }
+  }
+  ~FileLockGuard() {
+    if (fd >= 0) {
+      ::flock(fd, LOCK_UN);
+      ::close(fd);
+    }
+  }
+};
+
 } // namespace
 
 CCHMatrix::CCHMatrix(const boost::property_tree::ptree& config)
@@ -78,52 +127,57 @@ void CCHMatrix::Clear() {
 }
 
 bool CCHMatrix::ensure_customized(baldr::GraphReader& reader) {
-  if (ready_)
+  if (shared_)
     return true;
 
-  // WIP kill-switch: keep CCH code paths but always fall back to TDM until the
-  // offline artifact build is production-ready.
   if (!enabled_) {
-    // Latch so we do not re-log / re-probe every request.
-    customize_attempted_ = true;
-    LOG_INFO("cch: disabled (thor.cch.enabled=false); matrix requests fall back to TDM");
+    static std::once_flag disabled_log;
+    std::call_once(disabled_log, [] {
+      LOG_INFO("cch: disabled (thor.cch.enabled=false); matrix requests fall back to TDM");
+    });
     return false;
   }
 
-  // Serialize cold-start across prime_server worker *processes*. Without this,
-  // td-fill concurrency wakes many workers at once and each builds a full
-  // CustomizedMetric (~several GiB) in parallel → OOM. Steady-state RSS is
-  // still ~N_workers × metric size — keep VALHALLA_THREADS small for CCH.
-  const char* lock_path = "/tmp/valhalla_cch_customize.lock";
-  const int lock_fd = ::open(lock_path, O_CREAT | O_RDWR, 0644);
-  if (lock_fd >= 0) {
-    LOG_INFO("cch: waiting for customize lock pid=" + std::to_string(::getpid()));
-    if (::flock(lock_fd, LOCK_EX) != 0) {
-      LOG_WARN("cch: flock failed errno=" + std::to_string(errno) + "; continuing without lock");
-    }
-  } else {
-    LOG_WARN(std::string("cch: could not open ") + lock_path + "; continuing without lock");
-  }
+  const std::string key = make_cch_key(artifact_path_, levels_, max_class_, truck_opts_);
+  auto& proc = process_cch();
 
-  struct LockGuard {
-    int fd;
-    ~LockGuard() {
-      if (fd >= 0) {
-        ::flock(fd, LOCK_UN);
-        ::close(fd);
+  // Fast path: another worker already published the overlay.
+  {
+    std::lock_guard<std::mutex> lock(proc.mu);
+    if (proc.ready) {
+      if (proc.key != key) {
+        LOG_WARN("cch: process already customized with different config key; refusing mismatch "
+                 "(have=" +
+                 proc.key + " want=" + key + ")");
+        return false;
       }
+      shared_ = proc.ready;
+      return true;
     }
-  } lock_guard{lock_fd};
+    if (proc.attempted) {
+      // Permanent failure for this process (missing artifact / mismatch / exception).
+      return false;
+    }
+  }
 
-  // Another thread in this process may have finished while we waited.
-  if (ready_)
+  // Serialize builders across threads (mutex) and processes (flock).
+  std::lock_guard<std::mutex> lock(proc.mu);
+  if (proc.ready) {
+    if (proc.key != key) {
+      LOG_WARN("cch: process already customized with different config key; refusing mismatch");
+      return false;
+    }
+    shared_ = proc.ready;
     return true;
-
-  // Negative-cache latch: a missing/mismatched artifact must not cause the
-  // (expensive) truck-graph build to rerun on every request. Try once per worker.
-  if (customize_attempted_)
+  }
+  if (proc.attempted)
     return false;
-  customize_attempted_ = true;
+
+  proc.attempted = true;
+  proc.key = key;
+
+  FileLockGuard file_lock("/tmp/valhalla_cch_customize.lock");
+  LOG_INFO("cch: shared customize begin pid=" + std::to_string(::getpid()) + " key=" + key);
 
   std::ifstream probe(artifact_path_, std::ios::binary);
   if (!probe.good()) {
@@ -133,39 +187,46 @@ bool CCHMatrix::ensure_customized(baldr::GraphReader& reader) {
   probe.close();
 
   try {
-    order_ = cch::CchOrder::load(artifact_path_);
-    LOG_INFO("cch: building truck subgraph pid=" + std::to_string(::getpid()) +
-             " levels=[" + levels_to_string(levels_) +
+    auto state = std::make_shared<cch::SharedState>();
+    state->order = cch::CchOrder::load(artifact_path_);
+    LOG_INFO("cch: building truck subgraph (shared) levels=[" + levels_to_string(levels_) +
              "] max_class=" + std::to_string(static_cast<unsigned>(max_class_)) +
              " hgv_only=" + (truck_opts_.hgv_only ? "1" : "0"));
-    graph_ = cch::BuildTruckGraph(reader, levels_, max_class_, truck_opts_);
-    if (graph_.nodes.size() != order_.rank.size() ||
-        graph_.tile_build_hash != order_.tile_build_hash) {
+    state->graph = cch::BuildTruckGraph(reader, levels_, max_class_, truck_opts_);
+    if (state->graph.nodes.size() != state->order.rank.size() ||
+        state->graph.tile_build_hash != state->order.tile_build_hash) {
       LOG_WARN("cch: artifact does not match current tiles; disabling cch "
                "(graph_nodes=" +
-               std::to_string(graph_.nodes.size()) +
-               " order_nodes=" + std::to_string(order_.rank.size()) +
-               " graph_hash=" + std::to_string(graph_.tile_build_hash) +
-               " order_hash=" + std::to_string(order_.tile_build_hash) +
+               std::to_string(state->graph.nodes.size()) +
+               " order_nodes=" + std::to_string(state->order.rank.size()) +
+               " graph_hash=" + std::to_string(state->graph.tile_build_hash) +
+               " order_hash=" + std::to_string(state->order.tile_build_hash) +
                "). Rebuild cch_truck.bin with the same thor.cch levels/max_class/hgv_only.");
       return false;
     }
-    if (graph_.edges.size() != order_.num_base_edges) {
-      LOG_WARN("cch: artifact base_edges=" + std::to_string(order_.num_base_edges) +
-               " != graph edges=" + std::to_string(graph_.edges.size()) +
+    if (state->graph.edges.size() != state->order.num_base_edges) {
+      LOG_WARN("cch: artifact base_edges=" + std::to_string(state->order.num_base_edges) +
+               " != graph edges=" + std::to_string(state->graph.edges.size()) +
                "; filters likely diverge from valhalla_build_cch — disabling cch");
       return false;
     }
-    order_.build_adjacency(graph_);
-    metric_ = cch::Customize(graph_, order_);
-    ready_ = true;
-    LOG_INFO("cch: customized metric ready pid=" + std::to_string(::getpid()) + " (" +
-             std::to_string(graph_.nodes.size()) + " nodes)");
+    state->order.build_adjacency(state->graph);
+    state->metric = cch::Customize(state->graph, state->order);
+    // Customize stores pointers into its graph/order args — rebind to the heap
+    // object we are about to publish (stable for the process lifetime).
+    state->metric.graph = &state->graph;
+    state->metric.order = &state->order;
+
+    std::shared_ptr<const cch::SharedState> published = state;
+    proc.ready = published;
+    shared_ = published;
+    LOG_INFO("cch: shared customized metric ready (" + std::to_string(state->graph.nodes.size()) +
+             " nodes) — all thor workers reuse this instance");
   } catch (const std::exception& e) {
     LOG_WARN(std::string("cch: customization failed: ") + e.what());
-    ready_ = false;
+    return false;
   }
-  return ready_;
+  return static_cast<bool>(shared_);
 }
 
 bool CCHMatrix::SourceToTarget(Api& request,
@@ -179,6 +240,10 @@ bool CCHMatrix::SourceToTarget(Api& request,
   if (!ensure_customized(graphreader)) {
     return false; // worker will have already chosen fallback; defensive.
   }
+
+  const auto& graph = shared_->graph;
+  const auto& order = shared_->order;
+  const auto& metric = shared_->metric;
 
   const auto& options = request.options();
   const auto& srcs = options.sources();
@@ -199,7 +264,7 @@ bool CCHMatrix::SourceToTarget(Api& request,
     if (!tile)
       return -1;
     const auto* de = tile->directededge(edge_id);
-    return graph_.index_of(de->endnode().value);
+    return graph.index_of(de->endnode().value);
   };
 
   std::vector<int> src_idx(srcs.size()), tgt_idx(tgts.size());
@@ -250,7 +315,7 @@ bool CCHMatrix::SourceToTarget(Api& request,
       continue;
     snapped_targets.push_back(static_cast<uint32_t>(tgt_idx[t]));
   }
-  cch::BuildRphastPhaseA(order_, metric_, snapped_targets, g_down_union, &buckets, interrupt_);
+  cch::BuildRphastPhaseA(order, metric, snapped_targets, g_down_union, &buckets, interrupt_);
 
   // Phase B: per-source contracted TD search into the union G↓ with buckets.
   const bool pareto = query_mode_ == cch::QueryMode::ContractedPareto;
@@ -267,11 +332,10 @@ bool CCHMatrix::SourceToTarget(Api& request,
     }
     std::unordered_map<uint32_t, float> arrival;
     if (pareto) {
-      cch::ContractedTdPareto(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
-                              depart_sow[s], &g_down_union, &buckets, arrival, nullptr,
-                              interrupt_);
+      cch::ContractedTdPareto(order, metric, static_cast<uint32_t>(src_idx[s]), snapped_targets,
+                              depart_sow[s], &g_down_union, &buckets, arrival, nullptr, interrupt_);
     } else {
-      cch::ContractedTdEarliest(order_, metric_, static_cast<uint32_t>(src_idx[s]), snapped_targets,
+      cch::ContractedTdEarliest(order, metric, static_cast<uint32_t>(src_idx[s]), snapped_targets,
                                 depart_sow[s], &g_down_union, &buckets, arrival, interrupt_);
     }
     for (int t = 0; t < tgts.size(); ++t) {
